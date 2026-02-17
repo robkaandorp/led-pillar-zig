@@ -6,9 +6,27 @@ var shutdown_requested: led.effects.StopFlag = .init(false);
 
 pub fn main() !void {
     shutdown_requested.store(false, .seq_cst);
+    var restore_posix_handlers = false;
+    var previous_sigint: std.posix.Sigaction = undefined;
+    var previous_sigterm: std.posix.Sigaction = undefined;
+
+    defer if (restore_posix_handlers) {
+        std.posix.sigaction(std.posix.SIG.TERM, &previous_sigterm, null);
+        std.posix.sigaction(std.posix.SIG.INT, &previous_sigint, null);
+    };
+
     if (builtin.os.tag == .windows) {
         try std.os.windows.SetConsoleCtrlHandler(windowsCtrlHandler, true);
         defer std.os.windows.SetConsoleCtrlHandler(windowsCtrlHandler, false) catch {};
+    } else {
+        const action: std.posix.Sigaction = .{
+            .handler = .{ .handler = posixCtrlHandler },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.INT, &action, &previous_sigint);
+        std.posix.sigaction(std.posix.SIG.TERM, &action, &previous_sigterm);
+        restore_posix_handlers = true;
     }
 
     var args = try std.process.argsWithAllocator(std.heap.page_allocator);
@@ -66,4 +84,8 @@ fn windowsCtrlHandler(ctrl_type: std.os.windows.DWORD) callconv(.winapi) std.os.
         },
         else => return std.os.windows.FALSE,
     }
+}
+
+fn posixCtrlHandler(_: i32) callconv(.c) void {
+    shutdown_requested.store(true, .seq_cst);
 }
