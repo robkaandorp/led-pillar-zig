@@ -50,7 +50,13 @@ https://github.com/robkaandorp/tcp_led_stream
 ### Commands
 
 - Build executable: `zig build`
-- Run pixel health + running pixel effect: `zig build run -- <host> [port] [frame_rate_hz]`
+- Run sender with selectable effect: `zig build run -- <host> [port] [frame_rate_hz] [effect] [effect_args...]`
+- Effects:
+  - `demo` (default): pixel health test, then running dot
+  - `health-test [hold_seconds]`
+  - `running-dot`
+  - `infinite-line [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
+  - `infinite-lines [line_count] [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
 - On normal exit or `Ctrl+C`, the sender clears the LED display to black before disconnecting.
 - Run console TCP display simulator: `zig build simulator -- [port]`
 - The simulator renders the matrix and prints live stats (FPS, bytes/s, total frames, total bytes) below it.

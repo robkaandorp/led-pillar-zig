@@ -13,6 +13,9 @@ pub const TcpClientConfig = tcp_client.Config;
 pub const DisplayBuffer = display_logic.DisplayBuffer;
 pub const DisplayConfig = display_logic.Config;
 pub const PixelHealthTestConfig = effects.PixelHealthTestConfig;
+pub const RunningDotConfig = effects.RunningDotConfig;
+pub const InfiniteLineConfig = effects.InfiniteLineConfig;
+pub const InfiniteLinesConfig = effects.InfiniteLinesConfig;
 
 test {
     _ = @import("tcp_client.zig");
