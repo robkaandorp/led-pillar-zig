@@ -8,6 +8,10 @@ const EffectKind = enum {
     demo,
     health_test,
     running_dot,
+    soap_bubbles,
+    campfire,
+    aurora_ribbons,
+    rain_ripple,
     infinite_line,
     infinite_lines,
 };
@@ -89,6 +93,18 @@ pub fn main() !void {
         .running_dot => try led.effects.runRunningDotEffect(&client, &display, .{
             .frame_rate_hz = run_config.frame_rate_hz,
         }, &shutdown_requested),
+        .soap_bubbles => try led.effects.runSoapBubblesEffect(&client, &display, .{
+            .frame_rate_hz = run_config.frame_rate_hz,
+        }, &shutdown_requested),
+        .campfire => try led.effects.runCampfireEffect(&client, &display, .{
+            .frame_rate_hz = run_config.frame_rate_hz,
+        }, &shutdown_requested),
+        .aurora_ribbons => try led.effects.runAuroraRibbonsEffect(&client, &display, .{
+            .frame_rate_hz = run_config.frame_rate_hz,
+        }, &shutdown_requested),
+        .rain_ripple => try led.effects.runRainRippleEffect(&client, &display, .{
+            .frame_rate_hz = run_config.frame_rate_hz,
+        }, &shutdown_requested),
         .infinite_line => try led.effects.runInfiniteLineEffect(&client, &display, .{
             .frame_rate_hz = run_config.frame_rate_hz,
             .rotation_period_seconds = run_config.infinite_rotation_period_seconds,
@@ -157,7 +173,7 @@ fn parseRunConfig(args: anytype) !RunConfig {
     }
 
     switch (run_config.effect) {
-        .demo, .running_dot => {
+        .demo, .running_dot, .soap_bubbles, .campfire, .aurora_ribbons, .rain_ripple => {
             if (args.next() != null) return error.TooManyArguments;
         },
         .health_test => {
@@ -202,6 +218,10 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
     if (std.mem.eql(u8, effect_arg, "demo")) return .demo;
     if (std.mem.eql(u8, effect_arg, "health-test")) return .health_test;
     if (std.mem.eql(u8, effect_arg, "running-dot")) return .running_dot;
+    if (std.mem.eql(u8, effect_arg, "soap-bubbles")) return .soap_bubbles;
+    if (std.mem.eql(u8, effect_arg, "campfire")) return .campfire;
+    if (std.mem.eql(u8, effect_arg, "aurora-ribbons")) return .aurora_ribbons;
+    if (std.mem.eql(u8, effect_arg, "rain-ripple")) return .rain_ripple;
     if (std.mem.eql(u8, effect_arg, "infinite-line")) return .infinite_line;
     if (std.mem.eql(u8, effect_arg, "infinite-lines")) return .infinite_lines;
     return error.UnknownEffect;
@@ -218,6 +238,10 @@ test "parseEffectKind accepts known effect names" {
     try std.testing.expectEqual(.demo, try parseEffectKind("demo"));
     try std.testing.expectEqual(.health_test, try parseEffectKind("health-test"));
     try std.testing.expectEqual(.running_dot, try parseEffectKind("running-dot"));
+    try std.testing.expectEqual(.soap_bubbles, try parseEffectKind("soap-bubbles"));
+    try std.testing.expectEqual(.campfire, try parseEffectKind("campfire"));
+    try std.testing.expectEqual(.aurora_ribbons, try parseEffectKind("aurora-ribbons"));
+    try std.testing.expectEqual(.rain_ripple, try parseEffectKind("rain-ripple"));
     try std.testing.expectEqual(.infinite_line, try parseEffectKind("infinite-line"));
     try std.testing.expectEqual(.infinite_lines, try parseEffectKind("infinite-lines"));
 }

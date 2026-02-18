@@ -55,6 +55,10 @@ https://github.com/robkaandorp/tcp_led_stream
   - `demo` (default): pixel health test, then running dot
   - `health-test [hold_seconds]`
   - `running-dot`
+  - `soap-bubbles`: drifting bubble-like particles
+  - `campfire`: warm, flickering ember glow
+  - `aurora-ribbons`: smooth flowing aurora bands
+  - `rain-ripple`: raindrop ripples across the display
   - `infinite-line [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
   - `infinite-lines [line_count] [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
 - On normal exit or `Ctrl+C`, the sender clears the LED display to black before disconnecting.
