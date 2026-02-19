@@ -64,8 +64,11 @@ Builtins:
 | `sin` | `sin(scalar)` | `scalar` |
 | `cos` | `cos(scalar)` | `scalar` |
 | `abs` | `abs(scalar)` | `scalar` |
+| `floor` | `floor(scalar)` | `scalar` |
+| `fract` | `fract(scalar)` | `scalar` |
 | `min` | `min(scalar, scalar)` | `scalar` |
 | `max` | `max(scalar, scalar)` | `scalar` |
+| `clamp` | `clamp(scalar, scalar, scalar)` | `scalar` |
 | `smoothstep` | `smoothstep(scalar, scalar, scalar)` | `scalar` |
 | `circle` | `circle(vec2, scalar)` | `scalar` |
 | `box` | `box(vec2, vec2)` | `scalar` |
@@ -134,4 +137,5 @@ Parser-compatible v1 examples:
 
 - `examples\dsl\v1\aurora.dsl`
 - `examples\dsl\v1\campfire.dsl`
+- `examples\dsl\v1\soap-bubbles.dsl`
 - `examples\dsl\v1\rain-ripple.dsl`

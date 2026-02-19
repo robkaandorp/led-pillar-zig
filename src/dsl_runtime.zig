@@ -472,8 +472,14 @@ fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) Runtim
         .sin => .{ .scalar = std.math.sin(asScalar(args[0])) },
         .cos => .{ .scalar = std.math.cos(asScalar(args[0])) },
         .abs => .{ .scalar = @abs(asScalar(args[0])) },
+        .floor => .{ .scalar = @floor(asScalar(args[0])) },
+        .fract => blk: {
+            const value = asScalar(args[0]);
+            break :blk .{ .scalar = value - @floor(value) };
+        },
         .min => .{ .scalar = @min(asScalar(args[0]), asScalar(args[1])) },
         .max => .{ .scalar = @max(asScalar(args[0]), asScalar(args[1])) },
+        .clamp => .{ .scalar = std.math.clamp(asScalar(args[0]), asScalar(args[1]), asScalar(args[2])) },
         .smoothstep => .{ .scalar = sdf_common.smoothstep(asScalar(args[0]), asScalar(args[1]), asScalar(args[2])) },
         .circle => .{ .scalar = sdf_common.sdfCircle(asVec2(args[0]), asScalar(args[1])) },
         .box => .{ .scalar = sdf_common.sdfBox(asVec2(args[0]), asVec2(args[1])) },
@@ -571,8 +577,12 @@ test "Evaluator evaluates v1 builtin expressions" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), try evalScalarExpression("sin(0.0)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), try evalScalarExpression("cos(0.0)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.25), try evalScalarExpression("abs(-0.25)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), try evalScalarExpression("floor(0.75)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), try evalScalarExpression("fract(2.75)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.2), try evalScalarExpression("min(0.2, 0.4)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.4), try evalScalarExpression("max(0.2, 0.4)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), try evalScalarExpression("clamp(0.3, 0.1, 0.5)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), try evalScalarExpression("clamp(0.8, 0.1, 0.5)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), try evalScalarExpression("smoothstep(0.0, 1.0, 0.5)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), try evalScalarExpression("circle(vec2(2.0, 0.0), 1.0) * 0.5", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), try evalScalarExpression("box(vec2(2.0, 0.0), vec2(1.0, 1.0)) * 0.5", inputs), 0.0001);
