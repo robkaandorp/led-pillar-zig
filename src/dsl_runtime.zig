@@ -19,62 +19,124 @@ const RuntimeValue = union(enum) {
     rgba: sdf_common.ColorRgba,
 };
 
-const LetBinding = struct {
-    name: []const u8,
-    value: RuntimeValue,
+const InputSlot = enum {
+    time,
+    frame,
+    x,
+    y,
+    width,
+    height,
 };
 
-const Scope = struct {
-    inputs: PixelInputs,
-    param_count: usize,
-    let_count: usize = 0,
+const ResolvedSlot = union(enum) {
+    input: InputSlot,
+    param: usize,
+    let_slot: usize,
+};
+
+const CompiledExpr = union(enum) {
+    literal: RuntimeValue,
+    slot: ResolvedSlot,
+    unary: UnaryExpr,
+    binary: BinaryExpr,
+    call: CallExpr,
+
+    const UnaryExpr = struct {
+        op: dsl_parser.Expr.UnaryOp,
+        operand: *const CompiledExpr,
+    };
+
+    const BinaryExpr = struct {
+        op: dsl_parser.Expr.BinaryOp,
+        left: *const CompiledExpr,
+        right: *const CompiledExpr,
+    };
+
+    const CallExpr = struct {
+        builtin: dsl_parser.BuiltinId,
+        args: []const *const CompiledExpr,
+    };
+};
+
+const CompiledStatement = union(enum) {
+    let_decl: LetDecl,
+    blend: *const CompiledExpr,
+
+    const LetDecl = struct {
+        slot: usize,
+        expr: *const CompiledExpr,
+    };
+};
+
+const CompiledLayer = struct {
+    statements: []const CompiledStatement,
+    let_count: usize,
+};
+
+const CompiledParam = struct {
+    expr: *const CompiledExpr,
+    depends_on_xy: bool,
+};
+
+const CompiledProgram = struct {
+    params: []const CompiledParam,
+    layers: []const CompiledLayer,
 };
 
 const max_builtin_args: usize = 8;
 
 pub const Evaluator = struct {
     allocator: std.mem.Allocator,
-    program: dsl_parser.Program,
+    compiled: CompiledProgram,
+    compile_arena: std.heap.ArenaAllocator,
     param_values: []f32,
-    param_depends_on_xy: []bool,
+    let_values: []RuntimeValue,
     has_dynamic_params: bool,
-    let_bindings: []LetBinding,
 
     pub fn init(allocator: std.mem.Allocator, program: dsl_parser.Program) !Evaluator {
+        var compile_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer compile_arena.deinit();
+
+        const compiled = try compileProgram(compile_arena.allocator(), program);
+
+        const param_values = try allocator.alloc(f32, compiled.params.len);
+        errdefer allocator.free(param_values);
+
         var max_let_count: usize = 0;
-        for (program.layers) |layer| {
-            var let_count: usize = 0;
-            for (layer.statements) |statement| {
-                if (statement == .let_decl) let_count += 1;
-            }
-            max_let_count = @max(max_let_count, let_count);
+        for (compiled.layers) |layer| {
+            max_let_count = @max(max_let_count, layer.let_count);
         }
 
-        var evaluator = Evaluator{
-            .allocator = allocator,
-            .program = program,
-            .param_values = try allocator.alloc(f32, program.params.len),
-            .param_depends_on_xy = try allocator.alloc(bool, program.params.len),
-            .has_dynamic_params = false,
-            .let_bindings = try allocator.alloc(LetBinding, max_let_count),
-        };
+        const let_values = try allocator.alloc(RuntimeValue, max_let_count);
+        errdefer allocator.free(let_values);
 
-        evaluator.buildParamDependencyFlags();
-        return evaluator;
+        var has_dynamic_params = false;
+        for (compiled.params) |param| {
+            has_dynamic_params = has_dynamic_params or param.depends_on_xy;
+        }
+
+        return .{
+            .allocator = allocator,
+            .compiled = compiled,
+            .compile_arena = compile_arena,
+            .param_values = param_values,
+            .let_values = let_values,
+            .has_dynamic_params = has_dynamic_params,
+        };
     }
 
     pub fn deinit(self: *Evaluator) void {
         self.allocator.free(self.param_values);
-        self.allocator.free(self.param_depends_on_xy);
-        self.allocator.free(self.let_bindings);
+        self.allocator.free(self.let_values);
+        self.compile_arena.deinit();
     }
 
     pub fn evaluatePixel(self: *Evaluator, inputs: PixelInputs) !sdf_common.ColorRgba {
-        try self.evaluateParams(inputs, .all);
+        self.evaluateParams(inputs, .all);
         return self.evaluatePixelLayers(inputs);
     }
 
-    fn evaluatePixelLayers(self: *Evaluator, inputs: PixelInputs) !sdf_common.ColorRgba {
+    fn evaluatePixelLayers(self: *Evaluator, inputs: PixelInputs) sdf_common.ColorRgba {
         var out = sdf_common.ColorRgba{
             .r = 0.0,
             .g = 0.0,
@@ -82,24 +144,14 @@ pub const Evaluator = struct {
             .a = 1.0,
         };
 
-        for (self.program.layers) |layer| {
-            var scope = Scope{
-                .inputs = inputs,
-                .param_count = self.param_values.len,
-            };
-
+        for (self.compiled.layers) |layer| {
             for (layer.statements) |statement| {
                 switch (statement) {
                     .let_decl => |let_decl| {
-                        if (scope.let_count >= self.let_bindings.len) return error.TooManyLayerBindings;
-                        self.let_bindings[scope.let_count] = .{
-                            .name = let_decl.name,
-                            .value = try self.evalExpr(let_decl.value, &scope),
-                        };
-                        scope.let_count += 1;
+                        self.let_values[let_decl.slot] = self.evalExpr(let_decl.expr, inputs);
                     },
                     .blend => |blend_expr| {
-                        const src = try expectRgba(try self.evalExpr(blend_expr, &scope));
+                        const src = asRgba(self.evalExpr(blend_expr, inputs));
                         out = sdf_common.ColorRgba.blendOver(src, out);
                     },
                 }
@@ -124,6 +176,7 @@ pub const Evaluator = struct {
         const height_f = @as(f32, @floatFromInt(display.height));
         const frame_f = @as(f32, @floatFromInt(frame_number));
         const time_s = frame_ctx.timeSeconds();
+
         const frame_inputs = PixelInputs{
             .time = time_s,
             .frame = frame_f,
@@ -132,7 +185,7 @@ pub const Evaluator = struct {
             .width = width_f,
             .height = height_f,
         };
-        try self.evaluateParams(frame_inputs, .frame_static);
+        self.evaluateParams(frame_inputs, .frame_static);
 
         var y: u16 = 0;
         while (y < display.height) : (y += 1) {
@@ -141,6 +194,7 @@ pub const Evaluator = struct {
             while (x < display.width) : (x += 1) {
                 const px = @as(f32, @floatFromInt(x)) + 0.5;
                 const logical_index = (@as(usize, y) * @as(usize, display.width)) + @as(usize, x);
+
                 const pixel_inputs = PixelInputs{
                     .time = time_s,
                     .frame = frame_f,
@@ -149,10 +203,12 @@ pub const Evaluator = struct {
                     .width = width_f,
                     .height = height_f,
                 };
+
                 if (self.has_dynamic_params) {
-                    try self.evaluateParams(pixel_inputs, .pixel_dynamic);
+                    self.evaluateParams(pixel_inputs, .pixel_dynamic);
                 }
-                const rgba = try self.evaluatePixelLayers(pixel_inputs);
+
+                const rgba = self.evaluatePixelLayers(pixel_inputs);
                 const rgb = rgba.toRgb8();
                 frame[logical_index] = .{
                     .r = rgb[0],
@@ -169,217 +225,294 @@ pub const Evaluator = struct {
         pixel_dynamic,
     };
 
-    fn evaluateParams(self: *Evaluator, inputs: PixelInputs, mode: ParamEvalMode) !void {
-        var scope = Scope{
-            .inputs = inputs,
-            .param_count = 0,
-        };
-
-        for (self.program.params, 0..) |param, idx| {
-            const depends_on_xy = self.param_depends_on_xy[idx];
+    fn evaluateParams(self: *Evaluator, inputs: PixelInputs, mode: ParamEvalMode) void {
+        for (self.compiled.params, 0..) |param, idx| {
             switch (mode) {
                 .all => {},
-                .frame_static => if (depends_on_xy) continue,
-                .pixel_dynamic => if (!depends_on_xy) continue,
+                .frame_static => if (param.depends_on_xy) continue,
+                .pixel_dynamic => if (!param.depends_on_xy) continue,
             }
-            scope.param_count = idx;
-            self.param_values[idx] = try expectScalar(try self.evalExpr(param.value, &scope));
+            self.param_values[idx] = asScalar(self.evalExpr(param.expr, inputs));
         }
     }
 
-    fn buildParamDependencyFlags(self: *Evaluator) void {
-        self.has_dynamic_params = false;
-        for (self.program.params, 0..) |param, idx| {
-            const depends = self.exprDependsOnXY(param.value, idx);
-            self.param_depends_on_xy[idx] = depends;
-            self.has_dynamic_params = self.has_dynamic_params or depends;
-        }
-    }
-
-    fn exprDependsOnXY(self: *const Evaluator, expr: *const dsl_parser.Expr, param_limit: usize) bool {
-        switch (expr.*) {
-            .number => return false,
-            .identifier => |name| {
-                if (std.mem.eql(u8, name, "x") or std.mem.eql(u8, name, "y")) return true;
-                var idx: usize = 0;
-                while (idx < param_limit) : (idx += 1) {
-                    if (std.mem.eql(u8, self.program.params[idx].name, name)) {
-                        return self.param_depends_on_xy[idx];
-                    }
-                }
-                return false;
-            },
-            .unary => |unary_expr| return self.exprDependsOnXY(unary_expr.operand, param_limit),
-            .binary => |binary_expr| {
-                return self.exprDependsOnXY(binary_expr.left, param_limit) or
-                    self.exprDependsOnXY(binary_expr.right, param_limit);
-            },
-            .call => |call_expr| {
-                for (call_expr.args) |arg| {
-                    if (self.exprDependsOnXY(arg, param_limit)) return true;
-                }
-                return false;
-            },
-        }
-    }
-
-    fn evalExpr(self: *Evaluator, expr: *const dsl_parser.Expr, scope: *Scope) !RuntimeValue {
-        switch (expr.*) {
-            .number => |number| return .{ .scalar = number },
-            .identifier => |name| return self.resolveIdentifier(name, scope),
-            .unary => |unary_expr| {
-                const operand = try expectScalar(try self.evalExpr(unary_expr.operand, scope));
-                return switch (unary_expr.op) {
+    fn evalExpr(self: *const Evaluator, expr: *const CompiledExpr, inputs: PixelInputs) RuntimeValue {
+        return switch (expr.*) {
+            .literal => |literal| literal,
+            .slot => |slot| self.loadSlot(slot, inputs),
+            .unary => |unary_expr| blk: {
+                const operand = asScalar(self.evalExpr(unary_expr.operand, inputs));
+                break :blk switch (unary_expr.op) {
                     .negate => .{ .scalar = -operand },
                 };
             },
-            .binary => |binary_expr| {
-                const lhs = try expectScalar(try self.evalExpr(binary_expr.left, scope));
-                const rhs = try expectScalar(try self.evalExpr(binary_expr.right, scope));
-                return switch (binary_expr.op) {
+            .binary => |binary_expr| blk: {
+                const lhs = asScalar(self.evalExpr(binary_expr.left, inputs));
+                const rhs = asScalar(self.evalExpr(binary_expr.right, inputs));
+                break :blk switch (binary_expr.op) {
                     .add => .{ .scalar = lhs + rhs },
                     .sub => .{ .scalar = lhs - rhs },
                     .mul => .{ .scalar = lhs * rhs },
                     .div => .{ .scalar = lhs / rhs },
                 };
             },
-            .call => |call_expr| {
-                if (call_expr.args.len > max_builtin_args) return error.InvalidBuiltinArity;
+            .call => |call_expr| blk: {
                 var arg_values: [max_builtin_args]RuntimeValue = undefined;
                 for (call_expr.args, 0..) |arg, idx| {
-                    arg_values[idx] = try self.evalExpr(arg, scope);
+                    arg_values[idx] = self.evalExpr(arg, inputs);
                 }
-                return evalBuiltin(call_expr.builtin, arg_values[0..call_expr.args.len]);
+                break :blk evalBuiltin(call_expr.builtin, arg_values[0..call_expr.args.len]);
+            },
+        };
+    }
+
+    fn loadSlot(self: *const Evaluator, slot: ResolvedSlot, inputs: PixelInputs) RuntimeValue {
+        return switch (slot) {
+            .param => |idx| .{ .scalar = self.param_values[idx] },
+            .let_slot => |idx| self.let_values[idx],
+            .input => |input| switch (input) {
+                .time => .{ .scalar = inputs.time },
+                .frame => .{ .scalar = inputs.frame },
+                .x => .{ .scalar = inputs.x },
+                .y => .{ .scalar = inputs.y },
+                .width => .{ .scalar = inputs.width },
+                .height => .{ .scalar = inputs.height },
+            },
+        };
+    }
+};
+
+fn compileProgram(allocator: std.mem.Allocator, program: dsl_parser.Program) !CompiledProgram {
+    var param_lookup = std.StringHashMap(usize).init(allocator);
+    defer param_lookup.deinit();
+
+    const params = try allocator.alloc(CompiledParam, program.params.len);
+    for (program.params, 0..) |param, idx| {
+        const compiled_expr = try compileExpr(allocator, param.value, &param_lookup, null);
+        params[idx] = .{
+            .expr = compiled_expr,
+            .depends_on_xy = compiledExprDependsOnXY(compiled_expr, params[0..idx]),
+        };
+        try param_lookup.put(param.name, idx);
+    }
+
+    const layers = try allocator.alloc(CompiledLayer, program.layers.len);
+    for (program.layers, 0..) |layer, idx| {
+        layers[idx] = try compileLayer(allocator, layer, &param_lookup);
+    }
+
+    return .{
+        .params = params,
+        .layers = layers,
+    };
+}
+
+fn compileLayer(
+    allocator: std.mem.Allocator,
+    layer: dsl_parser.Layer,
+    param_lookup: *const std.StringHashMap(usize),
+) !CompiledLayer {
+    var let_lookup = std.StringHashMap(usize).init(allocator);
+    defer let_lookup.deinit();
+
+    const statements = try allocator.alloc(CompiledStatement, layer.statements.len);
+    var let_slot: usize = 0;
+
+    for (layer.statements, 0..) |statement, idx| {
+        switch (statement) {
+            .let_decl => |let_decl| {
+                const compiled_expr = try compileExpr(allocator, let_decl.value, param_lookup, &let_lookup);
+                statements[idx] = .{
+                    .let_decl = .{
+                        .slot = let_slot,
+                        .expr = compiled_expr,
+                    },
+                };
+                try let_lookup.put(let_decl.name, let_slot);
+                let_slot += 1;
+            },
+            .blend => |blend_expr| {
+                const compiled_expr = try compileExpr(allocator, blend_expr, param_lookup, &let_lookup);
+                statements[idx] = .{ .blend = compiled_expr };
             },
         }
     }
 
-    fn resolveIdentifier(self: *const Evaluator, name: []const u8, scope: *const Scope) !RuntimeValue {
-        var let_idx = scope.let_count;
-        while (let_idx > 0) {
-            let_idx -= 1;
-            const binding = self.let_bindings[let_idx];
-            if (std.mem.eql(u8, binding.name, name)) return binding.value;
-        }
+    return .{
+        .statements = statements,
+        .let_count = let_slot,
+    };
+}
 
-        for (self.program.params[0..scope.param_count], 0..) |param, idx| {
-            if (std.mem.eql(u8, param.name, name)) return .{ .scalar = self.param_values[idx] };
-        }
+fn compileExpr(
+    allocator: std.mem.Allocator,
+    expr: *const dsl_parser.Expr,
+    param_lookup: *const std.StringHashMap(usize),
+    let_lookup: ?*const std.StringHashMap(usize),
+) !*const CompiledExpr {
+    return switch (expr.*) {
+        .number => |number| makeExpr(allocator, .{ .literal = .{ .scalar = number } }),
+        .identifier => |name| blk: {
+            const slot = try resolveSlot(name, param_lookup, let_lookup);
+            break :blk makeExpr(allocator, .{ .slot = slot });
+        },
+        .unary => |unary_expr| blk: {
+            const operand = try compileExpr(allocator, unary_expr.operand, param_lookup, let_lookup);
+            if (operand.* == .literal) {
+                const folded = switch (unary_expr.op) {
+                    .negate => RuntimeValue{ .scalar = -asScalar(operand.literal) },
+                };
+                break :blk makeExpr(allocator, .{ .literal = folded });
+            }
+            break :blk makeExpr(allocator, .{ .unary = .{
+                .op = unary_expr.op,
+                .operand = operand,
+            } });
+        },
+        .binary => |binary_expr| blk: {
+            const left = try compileExpr(allocator, binary_expr.left, param_lookup, let_lookup);
+            const right = try compileExpr(allocator, binary_expr.right, param_lookup, let_lookup);
 
-        if (std.mem.eql(u8, name, "time")) return .{ .scalar = scope.inputs.time };
-        if (std.mem.eql(u8, name, "frame")) return .{ .scalar = scope.inputs.frame };
-        if (std.mem.eql(u8, name, "x")) return .{ .scalar = scope.inputs.x };
-        if (std.mem.eql(u8, name, "y")) return .{ .scalar = scope.inputs.y };
-        if (std.mem.eql(u8, name, "width")) return .{ .scalar = scope.inputs.width };
-        if (std.mem.eql(u8, name, "height")) return .{ .scalar = scope.inputs.height };
+            if (left.* == .literal and right.* == .literal) {
+                const lhs = asScalar(left.literal);
+                const rhs = asScalar(right.literal);
+                const folded = switch (binary_expr.op) {
+                    .add => lhs + rhs,
+                    .sub => lhs - rhs,
+                    .mul => lhs * rhs,
+                    .div => lhs / rhs,
+                };
+                break :blk makeExpr(allocator, .{ .literal = .{ .scalar = folded } });
+            }
 
-        return error.UnknownIdentifier;
-    }
-};
+            break :blk makeExpr(allocator, .{ .binary = .{
+                .op = binary_expr.op,
+                .left = left,
+                .right = right,
+            } });
+        },
+        .call => |call_expr| blk: {
+            const compiled_args = try allocator.alloc(*const CompiledExpr, call_expr.args.len);
+            var all_literal = true;
+            for (call_expr.args, 0..) |arg, idx| {
+                compiled_args[idx] = try compileExpr(allocator, arg, param_lookup, let_lookup);
+                all_literal = all_literal and (compiled_args[idx].* == .literal);
+            }
 
-fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) !RuntimeValue {
-    return switch (builtin) {
-        .sin => blk: {
-            try expectArity(args, 1);
-            break :blk .{ .scalar = std.math.sin(try expectScalar(args[0])) };
-        },
-        .cos => blk: {
-            try expectArity(args, 1);
-            break :blk .{ .scalar = std.math.cos(try expectScalar(args[0])) };
-        },
-        .abs => blk: {
-            try expectArity(args, 1);
-            break :blk .{ .scalar = @abs(try expectScalar(args[0])) };
-        },
-        .min => blk: {
-            try expectArity(args, 2);
-            break :blk .{ .scalar = @min(try expectScalar(args[0]), try expectScalar(args[1])) };
-        },
-        .max => blk: {
-            try expectArity(args, 2);
-            break :blk .{ .scalar = @max(try expectScalar(args[0]), try expectScalar(args[1])) };
-        },
-        .smoothstep => blk: {
-            try expectArity(args, 3);
-            break :blk .{ .scalar = sdf_common.smoothstep(
-                try expectScalar(args[0]),
-                try expectScalar(args[1]),
-                try expectScalar(args[2]),
-            ) };
-        },
-        .circle => blk: {
-            try expectArity(args, 2);
-            break :blk .{ .scalar = sdf_common.sdfCircle(try expectVec2(args[0]), try expectScalar(args[1])) };
-        },
-        .box => blk: {
-            try expectArity(args, 2);
-            break :blk .{ .scalar = sdf_common.sdfBox(try expectVec2(args[0]), try expectVec2(args[1])) };
-        },
-        .wrapdx => blk: {
-            try expectArity(args, 3);
-            break :blk .{ .scalar = wrappedDeltaX(
-                try expectScalar(args[0]),
-                try expectScalar(args[1]),
-                try expectScalar(args[2]),
-            ) };
-        },
-        .hash01 => blk: {
-            try expectArity(args, 1);
-            break :blk .{ .scalar = sdf_common.hash01(scalarToU32(try expectScalar(args[0]))) };
-        },
-        .hash_signed => blk: {
-            try expectArity(args, 1);
-            break :blk .{ .scalar = sdf_common.hashSigned(scalarToU32(try expectScalar(args[0]))) };
-        },
-        .hash_coords01 => blk: {
-            try expectArity(args, 3);
-            break :blk .{ .scalar = sdf_common.hashCoords01(
-                scalarToI32(try expectScalar(args[0])),
-                scalarToI32(try expectScalar(args[1])),
-                scalarToU32(try expectScalar(args[2])),
-            ) };
-        },
-        .vec2 => blk: {
-            try expectArity(args, 2);
-            break :blk .{ .vec2 = .{
-                .x = try expectScalar(args[0]),
-                .y = try expectScalar(args[1]),
-            } };
-        },
-        .rgba => blk: {
-            try expectArity(args, 4);
-            break :blk .{ .rgba = .{
-                .r = try expectScalar(args[0]),
-                .g = try expectScalar(args[1]),
-                .b = try expectScalar(args[2]),
-                .a = try expectScalar(args[3]),
-            } };
+            if (all_literal) {
+                var literal_args: [max_builtin_args]RuntimeValue = undefined;
+                for (compiled_args, 0..) |arg, idx| {
+                    literal_args[idx] = arg.literal;
+                }
+                const folded = evalBuiltin(call_expr.builtin, literal_args[0..compiled_args.len]);
+                break :blk makeExpr(allocator, .{ .literal = folded });
+            }
+
+            break :blk makeExpr(allocator, .{ .call = .{
+                .builtin = call_expr.builtin,
+                .args = compiled_args,
+            } });
         },
     };
 }
 
-fn expectArity(args: []const RuntimeValue, expected: usize) !void {
-    if (args.len != expected) return error.InvalidBuiltinArity;
+fn makeExpr(allocator: std.mem.Allocator, expr: CompiledExpr) !*const CompiledExpr {
+    const ptr = try allocator.create(CompiledExpr);
+    ptr.* = expr;
+    return ptr;
 }
 
-fn expectScalar(value: RuntimeValue) !f32 {
+fn resolveSlot(
+    name: []const u8,
+    param_lookup: *const std.StringHashMap(usize),
+    let_lookup: ?*const std.StringHashMap(usize),
+) !ResolvedSlot {
+    if (let_lookup) |lookup| {
+        if (lookup.get(name)) |idx| return .{ .let_slot = idx };
+    }
+    if (param_lookup.get(name)) |idx| return .{ .param = idx };
+    if (inputSlotFromName(name)) |input| return .{ .input = input };
+    return error.UnknownIdentifier;
+}
+
+fn inputSlotFromName(name: []const u8) ?InputSlot {
+    if (std.mem.eql(u8, name, "time")) return .time;
+    if (std.mem.eql(u8, name, "frame")) return .frame;
+    if (std.mem.eql(u8, name, "x")) return .x;
+    if (std.mem.eql(u8, name, "y")) return .y;
+    if (std.mem.eql(u8, name, "width")) return .width;
+    if (std.mem.eql(u8, name, "height")) return .height;
+    return null;
+}
+
+fn compiledExprDependsOnXY(expr: *const CompiledExpr, prior_params: []const CompiledParam) bool {
+    return switch (expr.*) {
+        .literal => false,
+        .slot => |slot| switch (slot) {
+            .param => |idx| prior_params[idx].depends_on_xy,
+            .let_slot => false,
+            .input => |input| input == .x or input == .y,
+        },
+        .unary => |unary_expr| compiledExprDependsOnXY(unary_expr.operand, prior_params),
+        .binary => |binary_expr| {
+            return compiledExprDependsOnXY(binary_expr.left, prior_params) or
+                compiledExprDependsOnXY(binary_expr.right, prior_params);
+        },
+        .call => |call_expr| {
+            for (call_expr.args) |arg| {
+                if (compiledExprDependsOnXY(arg, prior_params)) return true;
+            }
+            return false;
+        },
+    };
+}
+
+fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) RuntimeValue {
+    return switch (builtin) {
+        .sin => .{ .scalar = std.math.sin(asScalar(args[0])) },
+        .cos => .{ .scalar = std.math.cos(asScalar(args[0])) },
+        .abs => .{ .scalar = @abs(asScalar(args[0])) },
+        .min => .{ .scalar = @min(asScalar(args[0]), asScalar(args[1])) },
+        .max => .{ .scalar = @max(asScalar(args[0]), asScalar(args[1])) },
+        .smoothstep => .{ .scalar = sdf_common.smoothstep(asScalar(args[0]), asScalar(args[1]), asScalar(args[2])) },
+        .circle => .{ .scalar = sdf_common.sdfCircle(asVec2(args[0]), asScalar(args[1])) },
+        .box => .{ .scalar = sdf_common.sdfBox(asVec2(args[0]), asVec2(args[1])) },
+        .wrapdx => .{ .scalar = wrappedDeltaX(asScalar(args[0]), asScalar(args[1]), asScalar(args[2])) },
+        .hash01 => .{ .scalar = sdf_common.hash01(scalarToU32(asScalar(args[0]))) },
+        .hash_signed => .{ .scalar = sdf_common.hashSigned(scalarToU32(asScalar(args[0]))) },
+        .hash_coords01 => .{ .scalar = sdf_common.hashCoords01(
+            scalarToI32(asScalar(args[0])),
+            scalarToI32(asScalar(args[1])),
+            scalarToU32(asScalar(args[2])),
+        ) },
+        .vec2 => .{ .vec2 = .{ .x = asScalar(args[0]), .y = asScalar(args[1]) } },
+        .rgba => .{ .rgba = .{
+            .r = asScalar(args[0]),
+            .g = asScalar(args[1]),
+            .b = asScalar(args[2]),
+            .a = asScalar(args[3]),
+        } },
+    };
+}
+
+fn asScalar(value: RuntimeValue) f32 {
     return switch (value) {
         .scalar => |scalar| scalar,
-        else => error.InvalidValueType,
+        else => unreachable,
     };
 }
 
-fn expectVec2(value: RuntimeValue) !sdf_common.Vec2 {
+fn asVec2(value: RuntimeValue) sdf_common.Vec2 {
     return switch (value) {
         .vec2 => |vec| vec,
-        else => error.InvalidValueType,
+        else => unreachable,
     };
 }
 
-fn expectRgba(value: RuntimeValue) !sdf_common.ColorRgba {
+fn asRgba(value: RuntimeValue) sdf_common.ColorRgba {
     return switch (value) {
         .rgba => |rgba| rgba,
-        else => error.InvalidValueType,
+        else => unreachable,
     };
 }
 
