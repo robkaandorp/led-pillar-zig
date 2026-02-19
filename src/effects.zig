@@ -164,7 +164,11 @@ const FramePacer = struct {
     }
 
     fn markSent(self: *FramePacer) void {
-        self.next_send_ns = self.timer.read() +| self.frame_delay_ns;
+        if (self.next_send_ns == 0) {
+            self.next_send_ns = self.frame_delay_ns;
+            return;
+        }
+        self.next_send_ns +|= self.frame_delay_ns;
     }
 };
 
@@ -1500,6 +1504,18 @@ test "fillSolid uses white channel for RGBW white phase" {
 test "phaseFrameCount validates frame rate" {
     try std.testing.expectError(error.InvalidFrameRate, phaseFrameCount(0, 1));
     try std.testing.expectEqual(@as(u64, 40), try phaseFrameCount(40, 1));
+}
+
+test "frame pacer markSent keeps cadence when frame completion is late" {
+    var pacer = try FramePacer.init(40);
+    const delay = pacer.frame_delay_ns;
+    try std.testing.expectEqual(@as(u64, 0), pacer.next_send_ns);
+
+    pacer.markSent();
+    try std.testing.expectEqual(delay, pacer.next_send_ns);
+
+    pacer.markSent();
+    try std.testing.expectEqual(delay * 2, pacer.next_send_ns);
 }
 
 test "advanceRunner wraps rows and signals full rundown completion" {

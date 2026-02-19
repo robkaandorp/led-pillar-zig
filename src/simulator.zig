@@ -2,6 +2,7 @@ const std = @import("std");
 const tcp_client = @import("tcp_client.zig");
 
 const FrameHeader = struct {
+    protocol_version: u8,
     pixel_format: tcp_client.PixelFormat,
     payload_len: usize,
 };
@@ -95,6 +96,9 @@ fn serveConnection(
         try readExact(&reader, payload_buffer[0..header.payload_len]);
         stats.recordFrame(tcp_client.header_len + header.payload_len);
         try renderFrame(width, height, header.pixel_format, payload_buffer[0..header.payload_len], &stats, first_frame);
+        if (header.protocol_version == tcp_client.protocol_version) {
+            try stream.writeAll(&[_]u8{tcp_client.ack_byte});
+        }
         first_frame = false;
     }
 }
@@ -109,7 +113,11 @@ fn readExact(reader: *std.net.Stream.Reader, buffer: []u8) !void {
 fn parseHeader(header: []const u8, expected_pixels: u32) !FrameHeader {
     if (header.len != tcp_client.header_len) return error.InvalidHeaderLength;
     if (!std.mem.eql(u8, header[0..4], "LEDS")) return error.InvalidMagic;
-    if (header[4] != tcp_client.protocol_version) return error.UnsupportedProtocolVersion;
+    const protocol_version = header[4];
+    switch (protocol_version) {
+        0x01, tcp_client.protocol_version => {},
+        else => return error.UnsupportedProtocolVersion,
+    }
 
     const count: u32 = (@as(u32, header[5]) << 24) |
         (@as(u32, header[6]) << 16) |
@@ -120,6 +128,7 @@ fn parseHeader(header: []const u8, expected_pixels: u32) !FrameHeader {
     const pixel_format = try parsePixelFormat(header[9]);
     const payload_len = try std.math.mul(usize, @as(usize, count), pixel_format.bytesPerPixel());
     return .{
+        .protocol_version = protocol_version,
         .pixel_format = pixel_format,
         .payload_len = payload_len,
     };
@@ -206,8 +215,15 @@ test "parseHeader validates and extracts payload details" {
     const expected_pixels: u32 = 1200;
     const header = [_]u8{ 'L', 'E', 'D', 'S', 1, 0, 0, 4, 176, 0 };
     const parsed = try parseHeader(header[0..], expected_pixels);
+    try std.testing.expectEqual(@as(u8, 1), parsed.protocol_version);
     try std.testing.expectEqual(tcp_client.PixelFormat.rgb, parsed.pixel_format);
     try std.testing.expectEqual(@as(usize, 3600), parsed.payload_len);
+}
+
+test "parseHeader accepts protocol v2" {
+    const header = [_]u8{ 'L', 'E', 'D', 'S', tcp_client.protocol_version, 0, 0, 4, 176, 0 };
+    const parsed = try parseHeader(header[0..], 1200);
+    try std.testing.expectEqual(tcp_client.protocol_version, parsed.protocol_version);
 }
 
 test "parseHeader rejects invalid magic" {

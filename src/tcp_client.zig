@@ -5,7 +5,8 @@ pub const default_display_width: u16 = 30;
 pub const default_frame_rate_hz: u16 = 40;
 pub const default_port: u16 = 7777;
 
-pub const protocol_version: u8 = 0x01;
+pub const protocol_version: u8 = 0x02;
+pub const ack_byte: u8 = 0x06;
 pub const header_len: usize = 10;
 
 pub const PixelFormat = enum(u8) {
@@ -44,6 +45,7 @@ pub const TcpClient = struct {
     payload_len: usize,
     frame_buffer: []u8,
     stream: ?std.net.Stream = null,
+    pending_ack: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !TcpClient {
         if (config.width == 0 or config.height == 0) return error.InvalidDimensions;
@@ -84,6 +86,7 @@ pub const TcpClient = struct {
     pub fn connect(self: *TcpClient) !void {
         if (self.stream != null) return;
         self.stream = try std.net.tcpConnectToHost(self.allocator, self.host, self.port);
+        self.pending_ack = false;
     }
 
     pub fn disconnect(self: *TcpClient) void {
@@ -91,14 +94,22 @@ pub const TcpClient = struct {
             stream.close();
             self.stream = null;
         }
+        self.pending_ack = false;
     }
 
     pub fn sendFrame(self: *TcpClient, pixels: []const u8) !void {
         if (pixels.len != self.payload_len) return error.InvalidFrameLength;
         const stream = self.stream orelse return error.NotConnected;
+        try self.waitForPendingAck(stream);
 
         @memcpy(self.frame_buffer[header_len..], pixels);
         try stream.writeAll(self.frame_buffer);
+        self.pending_ack = true;
+    }
+
+    pub fn finishPendingFrame(self: *TcpClient) !void {
+        const stream = self.stream orelse return error.NotConnected;
+        try self.waitForPendingAck(stream);
     }
 
     pub fn expectedPayloadLen(self: *const TcpClient) usize {
@@ -121,6 +132,23 @@ pub const TcpClient = struct {
         header[7] = @as(u8, @intCast((self.pixel_count >> 8) & 0xff));
         header[8] = @as(u8, @intCast(self.pixel_count & 0xff));
         header[9] = @intFromEnum(self.pixel_format);
+    }
+
+    fn waitForPendingAck(self: *TcpClient, stream: std.net.Stream) !void {
+        if (!self.pending_ack) return;
+        var ack: [1]u8 = undefined;
+        try readExact(stream, ack[0..]);
+        self.pending_ack = false;
+        if (ack[0] != ack_byte) return error.InvalidAck;
+    }
+
+    fn readExact(stream: std.net.Stream, buffer: []u8) !void {
+        var offset: usize = 0;
+        while (offset < buffer.len) {
+            const bytes_read = try stream.read(buffer[offset..]);
+            if (bytes_read == 0) return error.EndOfStream;
+            offset += bytes_read;
+        }
     }
 };
 
@@ -178,4 +206,13 @@ test "sendFrame requires active connection" {
     @memset(frame, 0);
 
     try std.testing.expectError(error.NotConnected, client.sendFrame(frame));
+}
+
+test "disconnect clears pending ack state" {
+    var client = try TcpClient.init(std.testing.allocator, .{ .host = "127.0.0.1" });
+    defer client.deinit();
+
+    client.pending_ack = true;
+    client.disconnect();
+    try std.testing.expect(!client.pending_ack);
 }

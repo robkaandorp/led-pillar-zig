@@ -12,6 +12,7 @@ Effects should treat the display as horizontally continuous to support seamless 
 
 - Target display framerate is **40 Hz**, and it must remain configurable.
 - TCP frame format should follow the protocol defined in: https://github.com/robkaandorp/tcp_led_stream
+- Sender uses protocol version `0x02` and waits for per-frame ACK (`0x06`) before sending the next frame.
 - Physical pixel layout is serpentine by column: first column top-to-bottom, next column bottom-to-top, alternating per column.
 
 ## Planned modules

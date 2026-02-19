@@ -124,6 +124,7 @@ pub fn main() !void {
 fn clearDisplayOnExit(client: *led.TcpClient, display: *led.DisplayBuffer) !void {
     try led.effects.fillSolid(display, .{});
     try client.sendFrame(display.payload());
+    try client.finishPendingFrame();
 }
 
 fn windowsCtrlHandler(ctrl_type: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
