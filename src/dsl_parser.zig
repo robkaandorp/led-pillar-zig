@@ -665,6 +665,7 @@ test "parseAndValidate accepts valid v1 DSL" {
 test "parseAndValidate accepts bundled v1 DSL examples" {
     const example_paths = [_][]const u8{
         "examples\\dsl\\v1\\aurora.dsl",
+        "examples\\dsl\\v1\\aurora-ribbons-classic.dsl",
         "examples\\dsl\\v1\\campfire.dsl",
         "examples\\dsl\\v1\\rain-ripple.dsl",
     };
