@@ -152,7 +152,7 @@ fn runDslFileEffect(
     const frame = try std.heap.page_allocator.alloc(led.effects.Color, pixel_count);
     defer std.heap.page_allocator.free(frame);
 
-    const frame_period_ns = std.time.ns_per_s / @as(u64, frame_rate_hz);
+    const frame_period_ns_i128 = @as(i128, @intCast(std.time.ns_per_s / @as(u64, frame_rate_hz)));
     const frame_rate_f = @as(f32, @floatFromInt(frame_rate_hz));
     var frame_number: u64 = 0;
     var next_send_ns = std.time.nanoTimestamp();
@@ -168,7 +168,7 @@ fn runDslFileEffect(
         try client.sendFrame(display.payload());
 
         frame_number +%= 1;
-        next_send_ns = std.time.nanoTimestamp() + @as(i128, @intCast(frame_period_ns));
+        next_send_ns += frame_period_ns_i128;
     }
 }
 

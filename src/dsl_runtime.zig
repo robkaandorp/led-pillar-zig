@@ -36,6 +36,8 @@ pub const Evaluator = struct {
     allocator: std.mem.Allocator,
     program: dsl_parser.Program,
     param_values: []f32,
+    param_depends_on_xy: []bool,
+    has_dynamic_params: bool,
     let_bindings: []LetBinding,
 
     pub fn init(allocator: std.mem.Allocator, program: dsl_parser.Program) !Evaluator {
@@ -48,22 +50,31 @@ pub const Evaluator = struct {
             max_let_count = @max(max_let_count, let_count);
         }
 
-        return .{
+        var evaluator = Evaluator{
             .allocator = allocator,
             .program = program,
             .param_values = try allocator.alloc(f32, program.params.len),
+            .param_depends_on_xy = try allocator.alloc(bool, program.params.len),
+            .has_dynamic_params = false,
             .let_bindings = try allocator.alloc(LetBinding, max_let_count),
         };
+
+        evaluator.buildParamDependencyFlags();
+        return evaluator;
     }
 
     pub fn deinit(self: *Evaluator) void {
         self.allocator.free(self.param_values);
+        self.allocator.free(self.param_depends_on_xy);
         self.allocator.free(self.let_bindings);
     }
 
     pub fn evaluatePixel(self: *Evaluator, inputs: PixelInputs) !sdf_common.ColorRgba {
-        try self.evaluateParams(inputs);
+        try self.evaluateParams(inputs, .all);
+        return self.evaluatePixelLayers(inputs);
+    }
 
+    fn evaluatePixelLayers(self: *Evaluator, inputs: PixelInputs) !sdf_common.ColorRgba {
         var out = sdf_common.ColorRgba{
             .r = 0.0,
             .g = 0.0,
@@ -112,8 +123,16 @@ pub const Evaluator = struct {
         const width_f = @as(f32, @floatFromInt(display.width));
         const height_f = @as(f32, @floatFromInt(display.height));
         const frame_f = @as(f32, @floatFromInt(frame_number));
-
-        for (frame[0..required]) |*pixel| pixel.* = .{};
+        const time_s = frame_ctx.timeSeconds();
+        const frame_inputs = PixelInputs{
+            .time = time_s,
+            .frame = frame_f,
+            .x = 0.0,
+            .y = 0.0,
+            .width = width_f,
+            .height = height_f,
+        };
+        try self.evaluateParams(frame_inputs, .frame_static);
 
         var y: u16 = 0;
         while (y < display.height) : (y += 1) {
@@ -122,14 +141,18 @@ pub const Evaluator = struct {
             while (x < display.width) : (x += 1) {
                 const px = @as(f32, @floatFromInt(x)) + 0.5;
                 const logical_index = (@as(usize, y) * @as(usize, display.width)) + @as(usize, x);
-                const rgba = try self.evaluatePixel(.{
-                    .time = frame_ctx.timeSeconds(),
+                const pixel_inputs = PixelInputs{
+                    .time = time_s,
                     .frame = frame_f,
                     .x = px,
                     .y = py,
                     .width = width_f,
                     .height = height_f,
-                });
+                };
+                if (self.has_dynamic_params) {
+                    try self.evaluateParams(pixel_inputs, .pixel_dynamic);
+                }
+                const rgba = try self.evaluatePixelLayers(pixel_inputs);
                 const rgb = rgba.toRgb8();
                 frame[logical_index] = .{
                     .r = rgb[0],
@@ -140,15 +163,63 @@ pub const Evaluator = struct {
         }
     }
 
-    fn evaluateParams(self: *Evaluator, inputs: PixelInputs) !void {
+    const ParamEvalMode = enum {
+        all,
+        frame_static,
+        pixel_dynamic,
+    };
+
+    fn evaluateParams(self: *Evaluator, inputs: PixelInputs, mode: ParamEvalMode) !void {
         var scope = Scope{
             .inputs = inputs,
             .param_count = 0,
         };
 
         for (self.program.params, 0..) |param, idx| {
+            const depends_on_xy = self.param_depends_on_xy[idx];
+            switch (mode) {
+                .all => {},
+                .frame_static => if (depends_on_xy) continue,
+                .pixel_dynamic => if (!depends_on_xy) continue,
+            }
             scope.param_count = idx;
             self.param_values[idx] = try expectScalar(try self.evalExpr(param.value, &scope));
+        }
+    }
+
+    fn buildParamDependencyFlags(self: *Evaluator) void {
+        self.has_dynamic_params = false;
+        for (self.program.params, 0..) |param, idx| {
+            const depends = self.exprDependsOnXY(param.value, idx);
+            self.param_depends_on_xy[idx] = depends;
+            self.has_dynamic_params = self.has_dynamic_params or depends;
+        }
+    }
+
+    fn exprDependsOnXY(self: *const Evaluator, expr: *const dsl_parser.Expr, param_limit: usize) bool {
+        switch (expr.*) {
+            .number => return false,
+            .identifier => |name| {
+                if (std.mem.eql(u8, name, "x") or std.mem.eql(u8, name, "y")) return true;
+                var idx: usize = 0;
+                while (idx < param_limit) : (idx += 1) {
+                    if (std.mem.eql(u8, self.program.params[idx].name, name)) {
+                        return self.param_depends_on_xy[idx];
+                    }
+                }
+                return false;
+            },
+            .unary => |unary_expr| return self.exprDependsOnXY(unary_expr.operand, param_limit),
+            .binary => |binary_expr| {
+                return self.exprDependsOnXY(binary_expr.left, param_limit) or
+                    self.exprDependsOnXY(binary_expr.right, param_limit);
+            },
+            .call => |call_expr| {
+                for (call_expr.args) |arg| {
+                    if (self.exprDependsOnXY(arg, param_limit)) return true;
+                }
+                return false;
+            },
         }
     }
 
@@ -178,7 +249,7 @@ pub const Evaluator = struct {
                 for (call_expr.args, 0..) |arg, idx| {
                     arg_values[idx] = try self.evalExpr(arg, scope);
                 }
-                return evalBuiltin(call_expr.name, arg_values[0..call_expr.args.len]);
+                return evalBuiltin(call_expr.builtin, arg_values[0..call_expr.args.len]);
             },
         }
     }
@@ -206,85 +277,85 @@ pub const Evaluator = struct {
     }
 };
 
-fn evalBuiltin(name: []const u8, args: []const RuntimeValue) !RuntimeValue {
-    if (std.mem.eql(u8, name, "sin")) {
-        try expectArity(args, 1);
-        return .{ .scalar = std.math.sin(try expectScalar(args[0])) };
-    }
-    if (std.mem.eql(u8, name, "cos")) {
-        try expectArity(args, 1);
-        return .{ .scalar = std.math.cos(try expectScalar(args[0])) };
-    }
-    if (std.mem.eql(u8, name, "abs")) {
-        try expectArity(args, 1);
-        return .{ .scalar = @abs(try expectScalar(args[0])) };
-    }
-    if (std.mem.eql(u8, name, "min")) {
-        try expectArity(args, 2);
-        return .{ .scalar = @min(try expectScalar(args[0]), try expectScalar(args[1])) };
-    }
-    if (std.mem.eql(u8, name, "max")) {
-        try expectArity(args, 2);
-        return .{ .scalar = @max(try expectScalar(args[0]), try expectScalar(args[1])) };
-    }
-    if (std.mem.eql(u8, name, "smoothstep")) {
-        try expectArity(args, 3);
-        return .{ .scalar = sdf_common.smoothstep(
-            try expectScalar(args[0]),
-            try expectScalar(args[1]),
-            try expectScalar(args[2]),
-        ) };
-    }
-    if (std.mem.eql(u8, name, "circle")) {
-        try expectArity(args, 2);
-        return .{ .scalar = sdf_common.sdfCircle(try expectVec2(args[0]), try expectScalar(args[1])) };
-    }
-    if (std.mem.eql(u8, name, "box")) {
-        try expectArity(args, 2);
-        return .{ .scalar = sdf_common.sdfBox(try expectVec2(args[0]), try expectVec2(args[1])) };
-    }
-    if (std.mem.eql(u8, name, "wrapdx")) {
-        try expectArity(args, 3);
-        return .{ .scalar = wrappedDeltaX(
-            try expectScalar(args[0]),
-            try expectScalar(args[1]),
-            try expectScalar(args[2]),
-        ) };
-    }
-    if (std.mem.eql(u8, name, "hash01")) {
-        try expectArity(args, 1);
-        return .{ .scalar = sdf_common.hash01(scalarToU32(try expectScalar(args[0]))) };
-    }
-    if (std.mem.eql(u8, name, "hashSigned")) {
-        try expectArity(args, 1);
-        return .{ .scalar = sdf_common.hashSigned(scalarToU32(try expectScalar(args[0]))) };
-    }
-    if (std.mem.eql(u8, name, "hashCoords01")) {
-        try expectArity(args, 3);
-        return .{ .scalar = sdf_common.hashCoords01(
-            scalarToI32(try expectScalar(args[0])),
-            scalarToI32(try expectScalar(args[1])),
-            scalarToU32(try expectScalar(args[2])),
-        ) };
-    }
-    if (std.mem.eql(u8, name, "vec2")) {
-        try expectArity(args, 2);
-        return .{ .vec2 = .{
-            .x = try expectScalar(args[0]),
-            .y = try expectScalar(args[1]),
-        } };
-    }
-    if (std.mem.eql(u8, name, "rgba")) {
-        try expectArity(args, 4);
-        return .{ .rgba = .{
-            .r = try expectScalar(args[0]),
-            .g = try expectScalar(args[1]),
-            .b = try expectScalar(args[2]),
-            .a = try expectScalar(args[3]),
-        } };
-    }
-
-    return error.UnknownBuiltin;
+fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) !RuntimeValue {
+    return switch (builtin) {
+        .sin => blk: {
+            try expectArity(args, 1);
+            break :blk .{ .scalar = std.math.sin(try expectScalar(args[0])) };
+        },
+        .cos => blk: {
+            try expectArity(args, 1);
+            break :blk .{ .scalar = std.math.cos(try expectScalar(args[0])) };
+        },
+        .abs => blk: {
+            try expectArity(args, 1);
+            break :blk .{ .scalar = @abs(try expectScalar(args[0])) };
+        },
+        .min => blk: {
+            try expectArity(args, 2);
+            break :blk .{ .scalar = @min(try expectScalar(args[0]), try expectScalar(args[1])) };
+        },
+        .max => blk: {
+            try expectArity(args, 2);
+            break :blk .{ .scalar = @max(try expectScalar(args[0]), try expectScalar(args[1])) };
+        },
+        .smoothstep => blk: {
+            try expectArity(args, 3);
+            break :blk .{ .scalar = sdf_common.smoothstep(
+                try expectScalar(args[0]),
+                try expectScalar(args[1]),
+                try expectScalar(args[2]),
+            ) };
+        },
+        .circle => blk: {
+            try expectArity(args, 2);
+            break :blk .{ .scalar = sdf_common.sdfCircle(try expectVec2(args[0]), try expectScalar(args[1])) };
+        },
+        .box => blk: {
+            try expectArity(args, 2);
+            break :blk .{ .scalar = sdf_common.sdfBox(try expectVec2(args[0]), try expectVec2(args[1])) };
+        },
+        .wrapdx => blk: {
+            try expectArity(args, 3);
+            break :blk .{ .scalar = wrappedDeltaX(
+                try expectScalar(args[0]),
+                try expectScalar(args[1]),
+                try expectScalar(args[2]),
+            ) };
+        },
+        .hash01 => blk: {
+            try expectArity(args, 1);
+            break :blk .{ .scalar = sdf_common.hash01(scalarToU32(try expectScalar(args[0]))) };
+        },
+        .hash_signed => blk: {
+            try expectArity(args, 1);
+            break :blk .{ .scalar = sdf_common.hashSigned(scalarToU32(try expectScalar(args[0]))) };
+        },
+        .hash_coords01 => blk: {
+            try expectArity(args, 3);
+            break :blk .{ .scalar = sdf_common.hashCoords01(
+                scalarToI32(try expectScalar(args[0])),
+                scalarToI32(try expectScalar(args[1])),
+                scalarToU32(try expectScalar(args[2])),
+            ) };
+        },
+        .vec2 => blk: {
+            try expectArity(args, 2);
+            break :blk .{ .vec2 = .{
+                .x = try expectScalar(args[0]),
+                .y = try expectScalar(args[1]),
+            } };
+        },
+        .rgba => blk: {
+            try expectArity(args, 4);
+            break :blk .{ .rgba = .{
+                .r = try expectScalar(args[0]),
+                .g = try expectScalar(args[1]),
+                .b = try expectScalar(args[2]),
+                .a = try expectScalar(args[3]),
+            } };
+        },
+    };
 }
 
 fn expectArity(args: []const RuntimeValue, expected: usize) !void {

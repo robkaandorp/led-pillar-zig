@@ -6,6 +6,23 @@ pub const ValueType = enum {
     rgba,
 };
 
+pub const BuiltinId = enum {
+    sin,
+    cos,
+    abs,
+    min,
+    max,
+    smoothstep,
+    circle,
+    box,
+    wrapdx,
+    hash01,
+    hash_signed,
+    hash_coords01,
+    vec2,
+    rgba,
+};
+
 pub const Expr = union(enum) {
     number: f32,
     identifier: []const u8,
@@ -36,7 +53,7 @@ pub const Expr = union(enum) {
     };
 
     pub const CallExpr = struct {
-        name: []const u8,
+        builtin: BuiltinId,
         args: []const *Expr,
     };
 };
@@ -69,26 +86,27 @@ pub const Program = struct {
 };
 
 const BuiltinSpec = struct {
+    id: BuiltinId,
     name: []const u8,
     return_type: ValueType,
     arg_types: []const ValueType,
 };
 
 const builtin_specs = [_]BuiltinSpec{
-    .{ .name = "sin", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
-    .{ .name = "cos", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
-    .{ .name = "abs", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
-    .{ .name = "min", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
-    .{ .name = "max", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
-    .{ .name = "smoothstep", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
-    .{ .name = "circle", .return_type = .scalar, .arg_types = &[_]ValueType{ .vec2, .scalar } },
-    .{ .name = "box", .return_type = .scalar, .arg_types = &[_]ValueType{ .vec2, .vec2 } },
-    .{ .name = "wrapdx", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
-    .{ .name = "hash01", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
-    .{ .name = "hashSigned", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
-    .{ .name = "hashCoords01", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
-    .{ .name = "vec2", .return_type = .vec2, .arg_types = &[_]ValueType{ .scalar, .scalar } },
-    .{ .name = "rgba", .return_type = .rgba, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar, .scalar } },
+    .{ .id = .sin, .name = "sin", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .cos, .name = "cos", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .abs, .name = "abs", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .min, .name = "min", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
+    .{ .id = .max, .name = "max", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
+    .{ .id = .smoothstep, .name = "smoothstep", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
+    .{ .id = .circle, .name = "circle", .return_type = .scalar, .arg_types = &[_]ValueType{ .vec2, .scalar } },
+    .{ .id = .box, .name = "box", .return_type = .scalar, .arg_types = &[_]ValueType{ .vec2, .vec2 } },
+    .{ .id = .wrapdx, .name = "wrapdx", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
+    .{ .id = .hash01, .name = "hash01", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .hash_signed, .name = "hashSigned", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .hash_coords01, .name = "hashCoords01", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
+    .{ .id = .vec2, .name = "vec2", .return_type = .vec2, .arg_types = &[_]ValueType{ .scalar, .scalar } },
+    .{ .id = .rgba, .name = "rgba", .return_type = .rgba, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar, .scalar } },
 };
 
 const keyword_names = [_][]const u8{
@@ -409,6 +427,7 @@ const Parser = struct {
                 try self.advance();
 
                 if (try self.consume(.l_paren)) {
+                    const builtin = builtinIdFromName(name) orelse return error.UnknownBuiltin;
                     var args = std.ArrayList(*Expr).empty;
                     if (self.current.tag != .r_paren) {
                         while (true) {
@@ -420,7 +439,7 @@ const Parser = struct {
                     try self.expect(.r_paren);
                     return self.makeExpr(.{
                         .call = .{
-                            .name = name,
+                            .builtin = builtin,
                             .args = try args.toOwnedSlice(self.allocator),
                         },
                     });
@@ -545,7 +564,7 @@ fn inferExprType(
             for (call_expr.args, 0..) |arg, idx| {
                 arg_types[idx] = try inferExprType(arg, param_types, let_types);
             }
-            return resolveBuiltinCall(call_expr.name, arg_types[0..call_expr.args.len]);
+            return resolveBuiltinCall(call_expr.builtin, arg_types[0..call_expr.args.len]);
         },
     }
 }
@@ -563,16 +582,13 @@ fn inferIdentifierType(
     return error.UnknownIdentifier;
 }
 
-fn resolveBuiltinCall(name: []const u8, arg_types: []const ValueType) !ValueType {
-    for (builtin_specs) |spec| {
-        if (!std.mem.eql(u8, spec.name, name)) continue;
-        if (arg_types.len != spec.arg_types.len) return error.InvalidBuiltinArity;
-        for (arg_types, spec.arg_types) |arg_type, expected_type| {
-            if (arg_type != expected_type) return error.InvalidBuiltinArgumentType;
-        }
-        return spec.return_type;
+fn resolveBuiltinCall(builtin: BuiltinId, arg_types: []const ValueType) !ValueType {
+    const spec = builtinSpecFromId(builtin);
+    if (arg_types.len != spec.arg_types.len) return error.InvalidBuiltinArity;
+    for (arg_types, spec.arg_types) |arg_type, expected_type| {
+        if (arg_type != expected_type) return error.InvalidBuiltinArgumentType;
     }
-    return error.UnknownBuiltin;
+    return spec.return_type;
 }
 
 fn isReservedIdentifier(name: []const u8) bool {
@@ -587,10 +603,21 @@ fn isKeyword(name: []const u8) bool {
 }
 
 fn isBuiltinName(name: []const u8) bool {
+    return builtinIdFromName(name) != null;
+}
+
+fn builtinIdFromName(name: []const u8) ?BuiltinId {
     for (builtin_specs) |spec| {
-        if (std.mem.eql(u8, spec.name, name)) return true;
+        if (std.mem.eql(u8, spec.name, name)) return spec.id;
     }
-    return false;
+    return null;
+}
+
+fn builtinSpecFromId(builtin: BuiltinId) BuiltinSpec {
+    for (builtin_specs) |spec| {
+        if (spec.id == builtin) return spec;
+    }
+    unreachable;
 }
 
 fn isInputName(name: []const u8) bool {
