@@ -143,12 +143,12 @@ pub const TcpClient = struct {
     }
 
     fn readExact(stream: std.net.Stream, buffer: []u8) !void {
-        var offset: usize = 0;
-        while (offset < buffer.len) {
-            const bytes_read = try stream.read(buffer[offset..]);
-            if (bytes_read == 0) return error.EndOfStream;
-            offset += bytes_read;
-        }
+        var reader_buffer: [256]u8 = undefined;
+        var reader = stream.reader(&reader_buffer);
+        reader.interface().readSliceAll(buffer) catch |err| switch (err) {
+            error.ReadFailed => return reader.getError() orelse error.Unexpected,
+            else => return err,
+        };
     }
 };
 
