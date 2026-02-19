@@ -74,6 +74,7 @@ https://github.com/robkaandorp/tcp_led_stream
 - DSL v1 parser language spec: `DSL_V1_LANGUAGE.md`
 - DSL v1 example files: `examples\dsl\v1\`
   - Includes `soap-bubbles.dsl` with upward bubble cycles and burst-ring timing.
+  - DSL supports optional `frame` blocks plus `for`/`if` control flow in effect blocks.
 
 ## Development principles
 

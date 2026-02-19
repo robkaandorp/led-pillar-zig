@@ -64,10 +64,25 @@ pub const Expr = union(enum) {
 pub const Statement = union(enum) {
     let_decl: LetDecl,
     blend: *Expr,
+    if_stmt: IfStmt,
+    for_range: ForRange,
 
     pub const LetDecl = struct {
         name: []const u8,
         value: *Expr,
+    };
+
+    pub const IfStmt = struct {
+        condition: *Expr,
+        then_statements: []const Statement,
+        else_statements: []const Statement,
+    };
+
+    pub const ForRange = struct {
+        index_name: []const u8,
+        start_inclusive: usize,
+        end_exclusive: usize,
+        statements: []const Statement,
     };
 };
 
@@ -84,6 +99,7 @@ pub const Layer = struct {
 pub const Program = struct {
     effect_name: []const u8,
     params: []const Param,
+    frame_statements: []const Statement,
     layers: []const Layer,
     has_emit: bool,
 };
@@ -119,7 +135,12 @@ const keyword_names = [_][]const u8{
     "effect",
     "param",
     "layer",
+    "frame",
     "let",
+    "if",
+    "else",
+    "for",
+    "in",
     "blend",
     "emit",
 };
@@ -148,6 +169,7 @@ const TokenTag = enum {
     minus,
     star,
     slash,
+    dotdot,
     eof,
 };
 
@@ -207,6 +229,13 @@ const Lexer = struct {
                 self.index += 1;
                 return .{ .tag = .slash };
             },
+            '.' => {
+                if (self.index + 1 < self.source.len and self.source[self.index + 1] == '.') {
+                    self.index += 2;
+                    return .{ .tag = .dotdot };
+                }
+                return error.InvalidToken;
+            },
             else => {},
         }
 
@@ -224,7 +253,7 @@ const Lexer = struct {
             const start = self.index;
             self.index += 1;
             while (self.index < self.source.len and std.ascii.isDigit(self.source[self.index])) : (self.index += 1) {}
-            if (self.index < self.source.len and self.source[self.index] == '.') {
+            if (self.index + 1 < self.source.len and self.source[self.index] == '.' and std.ascii.isDigit(self.source[self.index + 1])) {
                 self.index += 1;
                 while (self.index < self.source.len and std.ascii.isDigit(self.source[self.index])) : (self.index += 1) {}
             }
@@ -271,6 +300,8 @@ const Parser = struct {
         var effect_name: ?[]const u8 = null;
         var has_emit = false;
         var params = std.ArrayList(Param).empty;
+        var frame_statements: []const Statement = try self.allocator.alloc(Statement, 0);
+        var has_frame_block = false;
         var layers = std.ArrayList(Layer).empty;
 
         while (self.current.tag != .eof) {
@@ -304,6 +335,16 @@ const Parser = struct {
                 continue;
             }
 
+            if (std.mem.eql(u8, keyword, "frame")) {
+                try self.advance();
+                if (has_frame_block) return error.DuplicateFrameBlock;
+                has_frame_block = true;
+                try self.expect(.l_brace);
+                frame_statements = try self.parseStatementsUntil(.r_brace, false);
+                try self.expect(.r_brace);
+                continue;
+            }
+
             if (std.mem.eql(u8, keyword, "emit")) {
                 try self.advance();
                 if (has_emit) return error.DuplicateEmit;
@@ -321,6 +362,7 @@ const Parser = struct {
         return .{
             .effect_name = parsed_effect_name,
             .params = try params.toOwnedSlice(self.allocator),
+            .frame_statements = frame_statements,
             .layers = try layers.toOwnedSlice(self.allocator),
             .has_emit = has_emit,
         };
@@ -329,44 +371,96 @@ const Parser = struct {
     fn parseLayer(self: *Parser) !Layer {
         const name = try self.expectIdentifier();
         try self.expect(.l_brace);
-
-        var statements = std.ArrayList(Statement).empty;
-        while (self.current.tag != .r_brace) {
-            if (self.current.tag == .eof) return error.UnexpectedEof;
-            if (self.current.tag != .identifier) return error.UnknownLayerStatement;
-
-            const keyword = self.current.lexeme;
-            if (std.mem.eql(u8, keyword, "let")) {
-                try self.advance();
-                const let_name = try self.expectIdentifier();
-                try self.expect(.equal);
-                const value = try self.parseExpression();
-                try statements.append(self.allocator, .{
-                    .let_decl = .{
-                        .name = let_name,
-                        .value = value,
-                    },
-                });
-                continue;
-            }
-
-            if (std.mem.eql(u8, keyword, "blend")) {
-                try self.advance();
-                const value = try self.parseExpression();
-                try statements.append(self.allocator, .{
-                    .blend = value,
-                });
-                continue;
-            }
-
-            return error.UnknownLayerStatement;
-        }
+        const statements = try self.parseStatementsUntil(.r_brace, true);
 
         try self.expect(.r_brace);
         return .{
             .name = name,
-            .statements = try statements.toOwnedSlice(self.allocator),
+            .statements = statements,
         };
+    }
+
+    fn parseStatementsUntil(self: *Parser, end_tag: TokenTag, allow_blend: bool) anyerror![]const Statement {
+        var statements = std.ArrayList(Statement).empty;
+        while (self.current.tag != end_tag) {
+            if (self.current.tag == .eof) return error.UnexpectedEof;
+            try statements.append(self.allocator, try self.parseStatement(allow_blend));
+        }
+        return statements.toOwnedSlice(self.allocator);
+    }
+
+    fn parseStatement(self: *Parser, allow_blend: bool) anyerror!Statement {
+        if (self.current.tag != .identifier) return error.UnknownLayerStatement;
+
+        const keyword = self.current.lexeme;
+        if (std.mem.eql(u8, keyword, "let")) {
+            try self.advance();
+            const let_name = try self.expectIdentifier();
+            try self.expect(.equal);
+            const value = try self.parseExpression();
+            return .{
+                .let_decl = .{
+                    .name = let_name,
+                    .value = value,
+                },
+            };
+        }
+
+        if (std.mem.eql(u8, keyword, "blend")) {
+            if (!allow_blend) return error.InvalidFrameStatement;
+            try self.advance();
+            const value = try self.parseExpression();
+            return .{ .blend = value };
+        }
+
+        if (std.mem.eql(u8, keyword, "if")) {
+            try self.advance();
+            const condition = try self.parseExpression();
+            try self.expect(.l_brace);
+            const then_statements = try self.parseStatementsUntil(.r_brace, allow_blend);
+            try self.expect(.r_brace);
+
+            var else_statements: []const Statement = try self.allocator.alloc(Statement, 0);
+            if (self.current.tag == .identifier and std.mem.eql(u8, self.current.lexeme, "else")) {
+                try self.advance();
+                try self.expect(.l_brace);
+                else_statements = try self.parseStatementsUntil(.r_brace, allow_blend);
+                try self.expect(.r_brace);
+            }
+
+            return .{
+                .if_stmt = .{
+                    .condition = condition,
+                    .then_statements = then_statements,
+                    .else_statements = else_statements,
+                },
+            };
+        }
+
+        if (std.mem.eql(u8, keyword, "for")) {
+            try self.advance();
+            const index_name = try self.expectIdentifier();
+            if (self.current.tag != .identifier or !std.mem.eql(u8, self.current.lexeme, "in")) {
+                return error.ExpectedInKeyword;
+            }
+            try self.advance();
+            const start_inclusive = try self.expectNonNegativeInteger();
+            try self.expect(.dotdot);
+            const end_exclusive = try self.expectNonNegativeInteger();
+            try self.expect(.l_brace);
+            const statements = try self.parseStatementsUntil(.r_brace, allow_blend);
+            try self.expect(.r_brace);
+            return .{
+                .for_range = .{
+                    .index_name = index_name,
+                    .start_inclusive = start_inclusive,
+                    .end_exclusive = end_exclusive,
+                    .statements = statements,
+                },
+            };
+        }
+
+        return error.UnknownLayerStatement;
     }
 
     fn parseExpression(self: *Parser) anyerror!*Expr {
@@ -489,6 +583,17 @@ const Parser = struct {
         return true;
     }
 
+    fn expectNonNegativeInteger(self: *Parser) !usize {
+        if (self.current.tag != .number) return error.ExpectedIntegerLiteral;
+        const value = self.current.number;
+        if (value < 0.0) return error.ExpectedIntegerLiteral;
+        const floored = @floor(value);
+        if (floored != value) return error.ExpectedIntegerLiteral;
+        const result = @as(usize, @intFromFloat(floored));
+        try self.advance();
+        return result;
+    }
+
     fn advance(self: *Parser) !void {
         self.current = try self.lexer.nextToken();
     }
@@ -506,6 +611,8 @@ fn validateProgram(allocator: std.mem.Allocator, program: *const Program) !void 
     defer param_names.deinit();
     var param_types = std.StringHashMap(ValueType).init(allocator);
     defer param_types.deinit();
+    var frame_types = std.StringHashMap(ValueType).init(allocator);
+    defer frame_types.deinit();
     var layer_names = std.StringHashMap(void).init(allocator);
     defer layer_names.deinit();
 
@@ -518,30 +625,93 @@ fn validateProgram(allocator: std.mem.Allocator, program: *const Program) !void 
         try param_types.put(param.name, .scalar);
     }
 
+    try validateStatements(allocator, program.frame_statements, false, &param_types, &frame_types, true);
+
     for (program.layers) |layer| {
         if (isReservedIdentifier(layer.name)) return error.ReservedIdentifier;
         if (layer_names.contains(layer.name)) return error.DuplicateLayerName;
         try layer_names.put(layer.name, {});
 
-        var let_types = std.StringHashMap(ValueType).init(allocator);
-        defer let_types.deinit();
+        var visible_let_types = try cloneTypeMap(allocator, &frame_types);
+        defer visible_let_types.deinit();
+        try validateStatements(allocator, layer.statements, true, &param_types, &visible_let_types, false);
+    }
+}
 
-        for (layer.statements) |statement| {
-            switch (statement) {
-                .let_decl => |let_decl| {
-                    if (isReservedIdentifier(let_decl.name)) return error.ReservedIdentifier;
-                    if (param_types.contains(let_decl.name) or let_types.contains(let_decl.name)) {
-                        return error.DuplicateLetName;
-                    }
-                    const let_type = try inferExprType(let_decl.value, &param_types, &let_types);
-                    try let_types.put(let_decl.name, let_type);
-                },
-                .blend => |blend_expr| {
-                    const blend_type = try inferExprType(blend_expr, &param_types, &let_types);
-                    if (blend_type != .rgba) return error.InvalidBlendType;
-                },
-            }
+fn validateStatements(
+    allocator: std.mem.Allocator,
+    statements: []const Statement,
+    allow_blend: bool,
+    param_types: *const std.StringHashMap(ValueType),
+    visible_let_types: *std.StringHashMap(ValueType),
+    frame_mode: bool,
+) !void {
+    for (statements) |statement| {
+        switch (statement) {
+            .let_decl => |let_decl| {
+                if (isReservedIdentifier(let_decl.name)) return error.ReservedIdentifier;
+                if (param_types.contains(let_decl.name) or visible_let_types.contains(let_decl.name)) {
+                    return error.DuplicateLetName;
+                }
+                if (frame_mode and exprUsesXYInput(let_decl.value)) return error.InvalidFrameExpressionInput;
+                const let_type = try inferExprType(let_decl.value, param_types, visible_let_types);
+                try visible_let_types.put(let_decl.name, let_type);
+            },
+            .blend => |blend_expr| {
+                if (!allow_blend) return error.InvalidFrameStatement;
+                const blend_type = try inferExprType(blend_expr, param_types, visible_let_types);
+                if (blend_type != .rgba) return error.InvalidBlendType;
+            },
+            .if_stmt => |if_stmt| {
+                if (frame_mode and exprUsesXYInput(if_stmt.condition)) return error.InvalidFrameExpressionInput;
+                const condition_type = try inferExprType(if_stmt.condition, param_types, visible_let_types);
+                if (condition_type != .scalar) return error.InvalidIfConditionType;
+
+                var then_scope = try cloneTypeMap(allocator, visible_let_types);
+                defer then_scope.deinit();
+                try validateStatements(allocator, if_stmt.then_statements, allow_blend, param_types, &then_scope, frame_mode);
+
+                var else_scope = try cloneTypeMap(allocator, visible_let_types);
+                defer else_scope.deinit();
+                try validateStatements(allocator, if_stmt.else_statements, allow_blend, param_types, &else_scope, frame_mode);
+            },
+            .for_range => |for_stmt| {
+                if (for_stmt.end_exclusive <= for_stmt.start_inclusive) return error.InvalidForRange;
+                if (isReservedIdentifier(for_stmt.index_name)) return error.ReservedIdentifier;
+                if (param_types.contains(for_stmt.index_name) or visible_let_types.contains(for_stmt.index_name)) {
+                    return error.DuplicateLetName;
+                }
+
+                var loop_scope = try cloneTypeMap(allocator, visible_let_types);
+                defer loop_scope.deinit();
+                try loop_scope.put(for_stmt.index_name, .scalar);
+                try validateStatements(allocator, for_stmt.statements, allow_blend, param_types, &loop_scope, frame_mode);
+            },
         }
+    }
+}
+
+fn cloneTypeMap(allocator: std.mem.Allocator, source: *const std.StringHashMap(ValueType)) !std.StringHashMap(ValueType) {
+    var out = std.StringHashMap(ValueType).init(allocator);
+    var it = source.iterator();
+    while (it.next()) |entry| {
+        try out.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
+    return out;
+}
+
+fn exprUsesXYInput(expr: *const Expr) bool {
+    switch (expr.*) {
+        .number => return false,
+        .identifier => |name| return std.mem.eql(u8, name, "x") or std.mem.eql(u8, name, "y"),
+        .unary => |unary_expr| return exprUsesXYInput(unary_expr.operand),
+        .binary => |binary_expr| return exprUsesXYInput(binary_expr.left) or exprUsesXYInput(binary_expr.right),
+        .call => |call_expr| {
+            for (call_expr.args) |arg| {
+                if (exprUsesXYInput(arg)) return true;
+            }
+            return false;
+        },
     }
 }
 
@@ -664,8 +834,37 @@ test "parseAndValidate accepts valid v1 DSL" {
     const program = try parseAndValidate(arena.allocator(), source);
     try std.testing.expectEqualStrings("aurora_v1", program.effect_name);
     try std.testing.expectEqual(@as(usize, 2), program.params.len);
+    try std.testing.expectEqual(@as(usize, 0), program.frame_statements.len);
     try std.testing.expectEqual(@as(usize, 1), program.layers.len);
     try std.testing.expect(program.has_emit);
+}
+
+test "parseAndValidate accepts frame, for, and if blocks" {
+    const source =
+        \\effect bubbles
+        \\frame {
+        \\  let phase_base = time * 0.5
+        \\}
+        \\layer l {
+        \\  for i in 0..3 {
+        \\    let pulse = fract(phase_base + (i * 0.2))
+        \\    if pulse {
+        \\      blend rgba(0.2, 0.4, 0.8, pulse)
+        \\    } else {
+        \\      blend rgba(0.0, 0.0, 0.0, 0.0)
+        \\    }
+        \\  }
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = try parseAndValidate(arena.allocator(), source);
+    try std.testing.expectEqualStrings("bubbles", program.effect_name);
+    try std.testing.expectEqual(@as(usize, 1), program.frame_statements.len);
+    try std.testing.expectEqual(@as(usize, 1), program.layers.len);
 }
 
 test "parseAndValidate accepts bundled v1 DSL examples" {
@@ -713,6 +912,36 @@ test "parseAndValidate rejects invalid builtin arity" {
     defer arena.deinit();
 
     try std.testing.expectError(error.InvalidBuiltinArity, parseAndValidate(arena.allocator(), source));
+}
+
+test "parseAndValidate rejects invalid frame statements and xy usage" {
+    const frame_blend_source =
+        \\effect bad_frame_blend
+        \\frame {
+        \\  blend rgba(1.0, 1.0, 1.0, 1.0)
+        \\}
+        \\layer l {
+        \\  blend rgba(0.0, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+
+    const frame_xy_source =
+        \\effect bad_frame_xy
+        \\frame {
+        \\  let bad = x / width
+        \\}
+        \\layer l {
+        \\  blend rgba(0.0, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try std.testing.expectError(error.InvalidFrameStatement, parseAndValidate(arena.allocator(), frame_blend_source));
+    try std.testing.expectError(error.InvalidFrameExpressionInput, parseAndValidate(arena.allocator(), frame_xy_source));
 }
 
 test "parseAndValidate requires layer and emit" {

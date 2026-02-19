@@ -31,6 +31,7 @@ const InputSlot = enum {
 const ResolvedSlot = union(enum) {
     input: InputSlot,
     param: usize,
+    frame_let: usize,
     let_slot: usize,
 };
 
@@ -61,11 +62,23 @@ const CompiledExpr = union(enum) {
 const CompiledStatement = union(enum) {
     let_decl: LetDecl,
     blend: *const CompiledExpr,
+    if_stmt: IfStmt,
 
     const LetDecl = struct {
         slot: usize,
         expr: *const CompiledExpr,
     };
+
+    const IfStmt = struct {
+        condition: *const CompiledExpr,
+        then_statements: []const CompiledStatement,
+        else_statements: []const CompiledStatement,
+    };
+};
+
+const CompiledFrame = struct {
+    statements: []const CompiledStatement,
+    let_count: usize,
 };
 
 const CompiledLayer = struct {
@@ -80,6 +93,7 @@ const CompiledParam = struct {
 
 const CompiledProgram = struct {
     params: []const CompiledParam,
+    frame: CompiledFrame,
     layers: []const CompiledLayer,
 };
 
@@ -90,6 +104,7 @@ pub const Evaluator = struct {
     compiled: CompiledProgram,
     compile_arena: std.heap.ArenaAllocator,
     param_values: []f32,
+    frame_values: []RuntimeValue,
     let_values: []RuntimeValue,
     has_dynamic_params: bool,
 
@@ -101,6 +116,9 @@ pub const Evaluator = struct {
 
         const param_values = try allocator.alloc(f32, compiled.params.len);
         errdefer allocator.free(param_values);
+
+        const frame_values = try allocator.alloc(RuntimeValue, compiled.frame.let_count);
+        errdefer allocator.free(frame_values);
 
         var max_let_count: usize = 0;
         for (compiled.layers) |layer| {
@@ -120,6 +138,7 @@ pub const Evaluator = struct {
             .compiled = compiled,
             .compile_arena = compile_arena,
             .param_values = param_values,
+            .frame_values = frame_values,
             .let_values = let_values,
             .has_dynamic_params = has_dynamic_params,
         };
@@ -127,12 +146,14 @@ pub const Evaluator = struct {
 
     pub fn deinit(self: *Evaluator) void {
         self.allocator.free(self.param_values);
+        self.allocator.free(self.frame_values);
         self.allocator.free(self.let_values);
         self.compile_arena.deinit();
     }
 
     pub fn evaluatePixel(self: *Evaluator, inputs: PixelInputs) !sdf_common.ColorRgba {
         self.evaluateParams(inputs, .all);
+        self.evaluateFrame(inputs);
         return self.evaluatePixelLayers(inputs);
     }
 
@@ -145,20 +166,49 @@ pub const Evaluator = struct {
         };
 
         for (self.compiled.layers) |layer| {
-            for (layer.statements) |statement| {
-                switch (statement) {
-                    .let_decl => |let_decl| {
-                        self.let_values[let_decl.slot] = self.evalExpr(let_decl.expr, inputs);
-                    },
-                    .blend => |blend_expr| {
-                        const src = asRgba(self.evalExpr(blend_expr, inputs));
-                        out = sdf_common.ColorRgba.blendOver(src, out);
-                    },
-                }
-            }
+            self.executeStatements(layer.statements, inputs, false, &out);
         }
 
         return out;
+    }
+
+    fn evaluateFrame(self: *Evaluator, inputs: PixelInputs) void {
+        var dummy = sdf_common.ColorRgba{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
+        self.executeStatements(self.compiled.frame.statements, inputs, true, &dummy);
+    }
+
+    fn executeStatements(
+        self: *Evaluator,
+        statements: []const CompiledStatement,
+        inputs: PixelInputs,
+        frame_mode: bool,
+        out: *sdf_common.ColorRgba,
+    ) void {
+        for (statements) |statement| {
+            switch (statement) {
+                .let_decl => |let_decl| {
+                    const value = self.evalExpr(let_decl.expr, inputs);
+                    if (frame_mode) {
+                        self.frame_values[let_decl.slot] = value;
+                    } else {
+                        self.let_values[let_decl.slot] = value;
+                    }
+                },
+                .blend => |blend_expr| {
+                    if (frame_mode) unreachable;
+                    const src = asRgba(self.evalExpr(blend_expr, inputs));
+                    out.* = sdf_common.ColorRgba.blendOver(src, out.*);
+                },
+                .if_stmt => |if_stmt| {
+                    const condition = asScalar(self.evalExpr(if_stmt.condition, inputs));
+                    if (condition > 0.0) {
+                        self.executeStatements(if_stmt.then_statements, inputs, frame_mode, out);
+                    } else {
+                        self.executeStatements(if_stmt.else_statements, inputs, frame_mode, out);
+                    }
+                },
+            }
+        }
     }
 
     pub fn renderFrame(
@@ -186,6 +236,7 @@ pub const Evaluator = struct {
             .height = height_f,
         };
         self.evaluateParams(frame_inputs, .frame_static);
+        self.evaluateFrame(frame_inputs);
 
         var y: u16 = 0;
         while (y < display.height) : (y += 1) {
@@ -269,6 +320,7 @@ pub const Evaluator = struct {
     fn loadSlot(self: *const Evaluator, slot: ResolvedSlot, inputs: PixelInputs) RuntimeValue {
         return switch (slot) {
             .param => |idx| .{ .scalar = self.param_values[idx] },
+            .frame_let => |idx| self.frame_values[idx],
             .let_slot => |idx| self.let_values[idx],
             .input => |input| switch (input) {
                 .time => .{ .scalar = inputs.time },
@@ -288,7 +340,7 @@ fn compileProgram(allocator: std.mem.Allocator, program: dsl_parser.Program) !Co
 
     const params = try allocator.alloc(CompiledParam, program.params.len);
     for (program.params, 0..) |param, idx| {
-        const compiled_expr = try compileExpr(allocator, param.value, &param_lookup, null);
+        const compiled_expr = try compileExpr(allocator, param.value, &param_lookup, null, null, null);
         params[idx] = .{
             .expr = compiled_expr,
             .depends_on_xy = compiledExprDependsOnXY(compiled_expr, params[0..idx]),
@@ -296,14 +348,42 @@ fn compileProgram(allocator: std.mem.Allocator, program: dsl_parser.Program) !Co
         try param_lookup.put(param.name, idx);
     }
 
+    var frame_lookup = std.StringHashMap(usize).init(allocator);
+    defer frame_lookup.deinit();
+    const frame = try compileFrame(allocator, program.frame_statements, &param_lookup, &frame_lookup);
+
     const layers = try allocator.alloc(CompiledLayer, program.layers.len);
     for (program.layers, 0..) |layer, idx| {
-        layers[idx] = try compileLayer(allocator, layer, &param_lookup);
+        layers[idx] = try compileLayer(allocator, layer, &param_lookup, &frame_lookup);
     }
 
     return .{
         .params = params,
+        .frame = frame,
         .layers = layers,
+    };
+}
+
+fn compileFrame(
+    allocator: std.mem.Allocator,
+    frame_statements: []const dsl_parser.Statement,
+    param_lookup: *const std.StringHashMap(usize),
+    frame_lookup: *std.StringHashMap(usize),
+) !CompiledFrame {
+    var let_slot: usize = 0;
+    const statements = try compileStatements(
+        allocator,
+        frame_statements,
+        param_lookup,
+        null,
+        frame_lookup,
+        null,
+        false,
+        &let_slot,
+    );
+    return .{
+        .statements = statements,
+        .let_count = let_slot,
     };
 }
 
@@ -311,32 +391,21 @@ fn compileLayer(
     allocator: std.mem.Allocator,
     layer: dsl_parser.Layer,
     param_lookup: *const std.StringHashMap(usize),
+    frame_lookup: *const std.StringHashMap(usize),
 ) !CompiledLayer {
     var let_lookup = std.StringHashMap(usize).init(allocator);
     defer let_lookup.deinit();
-
-    const statements = try allocator.alloc(CompiledStatement, layer.statements.len);
     var let_slot: usize = 0;
-
-    for (layer.statements, 0..) |statement, idx| {
-        switch (statement) {
-            .let_decl => |let_decl| {
-                const compiled_expr = try compileExpr(allocator, let_decl.value, param_lookup, &let_lookup);
-                statements[idx] = .{
-                    .let_decl = .{
-                        .slot = let_slot,
-                        .expr = compiled_expr,
-                    },
-                };
-                try let_lookup.put(let_decl.name, let_slot);
-                let_slot += 1;
-            },
-            .blend => |blend_expr| {
-                const compiled_expr = try compileExpr(allocator, blend_expr, param_lookup, &let_lookup);
-                statements[idx] = .{ .blend = compiled_expr };
-            },
-        }
-    }
+    const statements = try compileStatements(
+        allocator,
+        layer.statements,
+        param_lookup,
+        frame_lookup,
+        &let_lookup,
+        null,
+        true,
+        &let_slot,
+    );
 
     return .{
         .statements = statements,
@@ -344,20 +413,128 @@ fn compileLayer(
     };
 }
 
+fn compileStatements(
+    allocator: std.mem.Allocator,
+    statements: []const dsl_parser.Statement,
+    param_lookup: *const std.StringHashMap(usize),
+    frame_lookup: ?*const std.StringHashMap(usize),
+    let_lookup: *std.StringHashMap(usize),
+    const_lookup: ?*const std.StringHashMap(f32),
+    allow_blend: bool,
+    let_slot: *usize,
+) ![]const CompiledStatement {
+    var compiled = std.ArrayList(CompiledStatement).empty;
+
+    for (statements) |statement| {
+        switch (statement) {
+            .let_decl => |let_decl| {
+                const compiled_expr = try compileExpr(allocator, let_decl.value, param_lookup, frame_lookup, let_lookup, const_lookup);
+                try compiled.append(allocator, .{
+                    .let_decl = .{
+                        .slot = let_slot.*,
+                        .expr = compiled_expr,
+                    },
+                });
+                try let_lookup.put(let_decl.name, let_slot.*);
+                let_slot.* += 1;
+            },
+            .blend => |blend_expr| {
+                if (!allow_blend) return error.InvalidFrameStatement;
+                const compiled_expr = try compileExpr(allocator, blend_expr, param_lookup, frame_lookup, let_lookup, const_lookup);
+                try compiled.append(allocator, .{ .blend = compiled_expr });
+            },
+            .if_stmt => |if_stmt| {
+                const condition = try compileExpr(allocator, if_stmt.condition, param_lookup, frame_lookup, let_lookup, const_lookup);
+
+                var then_lookup = try cloneUsizeMap(allocator, let_lookup);
+                defer then_lookup.deinit();
+                var then_slot = let_slot.*;
+                const then_statements = try compileStatements(
+                    allocator,
+                    if_stmt.then_statements,
+                    param_lookup,
+                    frame_lookup,
+                    &then_lookup,
+                    const_lookup,
+                    allow_blend,
+                    &then_slot,
+                );
+
+                var else_lookup = try cloneUsizeMap(allocator, let_lookup);
+                defer else_lookup.deinit();
+                var else_slot = let_slot.*;
+                const else_statements = try compileStatements(
+                    allocator,
+                    if_stmt.else_statements,
+                    param_lookup,
+                    frame_lookup,
+                    &else_lookup,
+                    const_lookup,
+                    allow_blend,
+                    &else_slot,
+                );
+
+                let_slot.* = @max(then_slot, else_slot);
+                try compiled.append(allocator, .{
+                    .if_stmt = .{
+                        .condition = condition,
+                        .then_statements = then_statements,
+                        .else_statements = else_statements,
+                    },
+                });
+            },
+            .for_range => |for_stmt| {
+                const base_slot = let_slot.*;
+                var max_slot = let_slot.*;
+                var i = for_stmt.start_inclusive;
+                while (i < for_stmt.end_exclusive) : (i += 1) {
+                    var iter_consts = try cloneF32Map(allocator, const_lookup);
+                    defer iter_consts.deinit();
+                    try iter_consts.put(for_stmt.index_name, @as(f32, @floatFromInt(i)));
+
+                    var iter_lookup = try cloneUsizeMap(allocator, let_lookup);
+                    defer iter_lookup.deinit();
+                    var iter_slot = base_slot;
+                    const iter_statements = try compileStatements(
+                        allocator,
+                        for_stmt.statements,
+                        param_lookup,
+                        frame_lookup,
+                        &iter_lookup,
+                        &iter_consts,
+                        allow_blend,
+                        &iter_slot,
+                    );
+                    try compiled.appendSlice(allocator, iter_statements);
+                    max_slot = @max(max_slot, iter_slot);
+                }
+                let_slot.* = max_slot;
+            },
+        }
+    }
+
+    return compiled.toOwnedSlice(allocator);
+}
+
 fn compileExpr(
     allocator: std.mem.Allocator,
     expr: *const dsl_parser.Expr,
     param_lookup: *const std.StringHashMap(usize),
+    frame_lookup: ?*const std.StringHashMap(usize),
     let_lookup: ?*const std.StringHashMap(usize),
+    const_lookup: ?*const std.StringHashMap(f32),
 ) !*const CompiledExpr {
     return switch (expr.*) {
         .number => |number| makeExpr(allocator, .{ .literal = .{ .scalar = number } }),
         .identifier => |name| blk: {
-            const slot = try resolveSlot(name, param_lookup, let_lookup);
+            if (const_lookup) |lookup| {
+                if (lookup.get(name)) |value| break :blk makeExpr(allocator, .{ .literal = .{ .scalar = value } });
+            }
+            const slot = try resolveSlot(name, param_lookup, frame_lookup, let_lookup);
             break :blk makeExpr(allocator, .{ .slot = slot });
         },
         .unary => |unary_expr| blk: {
-            const operand = try compileExpr(allocator, unary_expr.operand, param_lookup, let_lookup);
+            const operand = try compileExpr(allocator, unary_expr.operand, param_lookup, frame_lookup, let_lookup, const_lookup);
             if (operand.* == .literal) {
                 const folded = switch (unary_expr.op) {
                     .negate => RuntimeValue{ .scalar = -asScalar(operand.literal) },
@@ -370,8 +547,8 @@ fn compileExpr(
             } });
         },
         .binary => |binary_expr| blk: {
-            const left = try compileExpr(allocator, binary_expr.left, param_lookup, let_lookup);
-            const right = try compileExpr(allocator, binary_expr.right, param_lookup, let_lookup);
+            const left = try compileExpr(allocator, binary_expr.left, param_lookup, frame_lookup, let_lookup, const_lookup);
+            const right = try compileExpr(allocator, binary_expr.right, param_lookup, frame_lookup, let_lookup, const_lookup);
 
             if (left.* == .literal and right.* == .literal) {
                 const lhs = asScalar(left.literal);
@@ -395,7 +572,7 @@ fn compileExpr(
             const compiled_args = try allocator.alloc(*const CompiledExpr, call_expr.args.len);
             var all_literal = true;
             for (call_expr.args, 0..) |arg, idx| {
-                compiled_args[idx] = try compileExpr(allocator, arg, param_lookup, let_lookup);
+                compiled_args[idx] = try compileExpr(allocator, arg, param_lookup, frame_lookup, let_lookup, const_lookup);
                 all_literal = all_literal and (compiled_args[idx].* == .literal);
             }
 
@@ -425,14 +602,38 @@ fn makeExpr(allocator: std.mem.Allocator, expr: CompiledExpr) !*const CompiledEx
 fn resolveSlot(
     name: []const u8,
     param_lookup: *const std.StringHashMap(usize),
+    frame_lookup: ?*const std.StringHashMap(usize),
     let_lookup: ?*const std.StringHashMap(usize),
 ) !ResolvedSlot {
     if (let_lookup) |lookup| {
         if (lookup.get(name)) |idx| return .{ .let_slot = idx };
     }
+    if (frame_lookup) |lookup| {
+        if (lookup.get(name)) |idx| return .{ .frame_let = idx };
+    }
     if (param_lookup.get(name)) |idx| return .{ .param = idx };
     if (inputSlotFromName(name)) |input| return .{ .input = input };
     return error.UnknownIdentifier;
+}
+
+fn cloneUsizeMap(allocator: std.mem.Allocator, source: *const std.StringHashMap(usize)) !std.StringHashMap(usize) {
+    var out = std.StringHashMap(usize).init(allocator);
+    var it = source.iterator();
+    while (it.next()) |entry| {
+        try out.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
+    return out;
+}
+
+fn cloneF32Map(allocator: std.mem.Allocator, source: ?*const std.StringHashMap(f32)) !std.StringHashMap(f32) {
+    var out = std.StringHashMap(f32).init(allocator);
+    if (source) |src| {
+        var it = src.iterator();
+        while (it.next()) |entry| {
+            try out.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    return out;
 }
 
 fn inputSlotFromName(name: []const u8) ?InputSlot {
@@ -450,6 +651,7 @@ fn compiledExprDependsOnXY(expr: *const CompiledExpr, prior_params: []const Comp
         .literal => false,
         .slot => |slot| switch (slot) {
             .param => |idx| prior_params[idx].depends_on_xy,
+            .frame_let => false,
             .let_slot => false,
             .input => |input| input == .x or input == .y,
         },
@@ -634,6 +836,45 @@ test "Evaluator blends layers in order" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.25), color.r, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), color.g, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), color.b, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), color.a, 0.0001);
+}
+
+test "Evaluator supports frame block, for-range, and if statements" {
+    const source =
+        \\effect control_flow
+        \\frame {
+        \\  let base = time * 0.1
+        \\}
+        \\layer l {
+        \\  for i in 0..3 {
+        \\    let a = fract(base + (i * 0.5))
+        \\    if a {
+        \\      blend rgba(a, 0.0, 0.0, 0.5)
+        \\    }
+        \\  }
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = try dsl_parser.parseAndValidate(arena.allocator(), source);
+    var evaluator = try Evaluator.init(std.testing.allocator, program);
+    defer evaluator.deinit();
+
+    const color = try evaluator.evaluatePixel(.{
+        .time = 0.0,
+        .frame = 0.0,
+        .x = 0.5,
+        .y = 0.5,
+        .width = 30.0,
+        .height = 40.0,
+    });
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), color.r, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), color.g, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), color.b, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), color.a, 0.0001);
 }
 

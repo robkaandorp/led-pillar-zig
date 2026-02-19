@@ -24,15 +24,19 @@ Top-level statement order is flexible, but all required parts must exist exactly
 
 ```ebnf
 program        = top_level* EOF ;
-top_level      = effect_decl | param_decl | layer_decl | emit_stmt ;
+top_level      = effect_decl | param_decl | frame_decl | layer_decl | emit_stmt ;
 
 effect_decl    = "effect" IDENT ;
 param_decl     = "param" IDENT "=" expr ;
+frame_decl     = "frame" "{" stmt* "}" ;
 layer_decl     = "layer" IDENT "{" layer_stmt* "}" ;
 emit_stmt      = "emit" ;
 
-layer_stmt     = let_decl | blend_stmt ;
+stmt           = let_decl | if_stmt | for_stmt ;
+layer_stmt     = stmt | blend_stmt ;
 let_decl       = "let" IDENT "=" expr ;
+if_stmt        = "if" expr "{" layer_stmt* "}" [ "else" "{" layer_stmt* "}" ] ;
+for_stmt       = "for" IDENT "in" INTEGER ".." INTEGER "{" layer_stmt* "}" ;
 blend_stmt     = "blend" expr ;
 
 expr           = additive ;
@@ -85,31 +89,38 @@ Available input identifiers:
 ## Semantics (v1 parser model)
 
 - `param` expressions must type-check to `scalar`.
-- `let` binds a typed expression within the current layer scope.
+- `frame` block is optional and runs once per frame before pixel shading.
+- `let` binds a typed expression in the current scope.
+- `for` uses an integer range and the loop index is a scalar identifier.
+- `if` condition must type-check to `scalar` (`> 0` is treated as true at runtime).
 - `blend` expression must type-check to `rgba`.
 - Arithmetic operators (`+`, `-`, `*`, `/`) are scalar-only.
 - Unary `-` is scalar-only.
 - Function calls must match known builtin name, arity, and argument types exactly.
+- `for` loops are compile-time expanded by the runtime compiler.
 
 ## Validation rules
 
 The parser/validator rejects:
 
 - Missing required top-level constructs: `effect`, `layer`, `emit`
-- Duplicate `effect` or `emit`
+- Duplicate `effect`, `frame`, or `emit`
 - Unknown top-level or layer statements
 - Duplicate names:
   - duplicate `param`
   - duplicate `layer`
   - duplicate `let` (including conflicts with params)
-- Reserved identifiers for `param`, `layer`, `let` names:
-  - keywords (`effect`, `param`, `layer`, `let`, `blend`, `emit`)
+- Invalid `for` range (`end <= start`)
+- Reserved identifiers for `param`, `layer`, `let`, loop index names:
+  - keywords (`effect`, `param`, `frame`, `layer`, `let`, `if`, `else`, `for`, `in`, `blend`, `emit`)
   - builtin names
   - input names (`time`, `frame`, `x`, `y`, `width`, `height`)
 - Unknown identifiers
 - Unknown builtin names
 - Invalid builtin arity or argument types
-- Invalid expression typing for `param` or `blend`
+- Invalid expression typing for `param`, `if` condition, or `blend`
+- `frame` expressions that use `x` or `y`
+- `blend` usage inside `frame` block
 
 ## CLI usage in this repository
 
