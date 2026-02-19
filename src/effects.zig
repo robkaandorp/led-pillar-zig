@@ -129,6 +129,39 @@ const RainRipple = struct {
     life_frames: u16 = 18,
 };
 
+const SoapBubblesPixelContext = struct {
+    bubbles: []const SoapBubble,
+    frame_ctx: sdf_common.FrameContext,
+};
+
+const CampfirePixelContext = struct {
+    tongues: []const CampfireTongue,
+    frame_ctx: sdf_common.FrameContext,
+};
+
+const AuroraRibbonsPixelContext = struct {
+    layer_count: usize,
+    frame_ctx: sdf_common.FrameContext,
+};
+
+const RainRipplePixelContext = struct {
+    drops: []const RainDrop,
+    ripples: []const RainRipple,
+    frame_ctx: sdf_common.FrameContext,
+};
+
+const InfiniteLineDrawState = struct {
+    pivot_x: f32,
+    pivot_y: f32,
+    angle: f32,
+    color: Color,
+};
+
+const InfiniteLinesPixelContext = struct {
+    lines: []const InfiniteLineDrawState,
+    line_half_width: f32,
+};
+
 const max_effect_pixels: usize = @as(usize, tcp_client.default_display_width) * @as(usize, tcp_client.default_display_height);
 const max_soap_bubbles: usize = 24;
 const max_campfire_tongues: usize = 20;
@@ -294,8 +327,12 @@ pub fn runInfiniteLinesEffect(
     const line_count = @as(usize, config.line_count);
     const states = try std.heap.page_allocator.alloc(InfiniteLineState, line_count);
     defer std.heap.page_allocator.free(states);
+    const draw_states = try std.heap.page_allocator.alloc(InfiniteLineDrawState, line_count);
+    defer std.heap.page_allocator.free(draw_states);
     const initial_line_half_width = @as(f32, @floatFromInt(config.line_width_pixels)) / 2.0;
     const max_line_pixels = (@as(u32, display.width) * @as(u32, display.height)) / 2;
+    var frame_storage: [max_effect_pixels]Color = undefined;
+    const frame = try effectFrameSlice(&frame_storage, display);
 
     for (states) |*state| {
         state.* = .{
@@ -318,14 +355,17 @@ pub fn runInfiniteLinesEffect(
     const max_line_pixels_frame = max_line_pixels;
 
     while (!shouldStop(stop_flag)) {
-        display.clear(0);
-        for (states) |*state| {
+        for (states, 0..) |*state, idx| {
             if (lineCoverageExceedsLimit(display, state.pivot_x, state.pivot_y, state.angle, line_half_width, max_line_pixels_frame)) {
                 state.rotation_direction = -state.rotation_direction;
                 advanceLineAngleWithCoverageLimit(display, state, angular_step, line_half_width, max_line_pixels_frame);
             }
-            const color = lerpColor(state.current_color, state.target_color, state.color_phase);
-            try drawInfiniteWrappedLineOnDisplay(display, state.pivot_x, state.pivot_y, state.angle, line_half_width, color);
+            draw_states[idx] = .{
+                .pivot_x = state.pivot_x,
+                .pivot_y = state.pivot_y,
+                .angle = state.angle,
+                .color = lerpColor(state.current_color, state.target_color, state.color_phase),
+            };
 
             advanceLineAngleWithCoverageLimit(display, state, angular_step, line_half_width, max_line_pixels_frame);
 
@@ -337,6 +377,11 @@ pub fn runInfiniteLinesEffect(
             }
         }
 
+        renderColorFrameSinglePass(display, frame, InfiniteLinesPixelContext{
+            .lines = draw_states,
+            .line_half_width = line_half_width,
+        }, shadeInfiniteLinesPixel);
+        try blitColorFrame(display, frame);
         try sendFrameWithPacing(client, display.payload(), &pacer);
     }
 }
@@ -481,6 +526,26 @@ fn clearColorFrame(frame: []Color, color: Color) void {
     for (frame) |*pixel| pixel.* = color;
 }
 
+fn renderColorFrameSinglePass(
+    display: *const display_logic.DisplayBuffer,
+    frame: []Color,
+    context: anytype,
+    comptime shadePixelFn: fn (*const display_logic.DisplayBuffer, u16, u16, f32, f32, *Color, @TypeOf(context)) void,
+) void {
+    clearColorFrame(frame, .{});
+
+    var y: u16 = 0;
+    while (y < display.height) : (y += 1) {
+        const py = @as(f32, @floatFromInt(y)) + 0.5;
+        var x: u16 = 0;
+        while (x < display.width) : (x += 1) {
+            const px = @as(f32, @floatFromInt(x)) + 0.5;
+            const logical_index = logicalPixelIndex(display, x, y);
+            shadePixelFn(display, x, y, px, py, &frame[logical_index], context);
+        }
+    }
+}
+
 fn colorToRgba(color: Color) sdf_common.ColorRgba {
     return .{
         .r = @as(f32, @floatFromInt(color.r)) / 255.0,
@@ -490,15 +555,19 @@ fn colorToRgba(color: Color) sdf_common.ColorRgba {
     };
 }
 
-fn blendFramePixel(frame: []Color, pixel_index: usize, src: sdf_common.ColorRgba) void {
+fn blendColor(pixel: *Color, src: sdf_common.ColorRgba) void {
     if (src.a <= 0.0001) return;
-    const blended = sdf_common.ColorRgba.blendOver(src, colorToRgba(frame[pixel_index]));
+    const blended = sdf_common.ColorRgba.blendOver(src, colorToRgba(pixel.*));
     const rgb = blended.toRgb8();
-    frame[pixel_index] = .{
+    pixel.* = .{
         .r = rgb[0],
         .g = rgb[1],
         .b = rgb[2],
     };
+}
+
+fn blendFramePixel(frame: []Color, pixel_index: usize, src: sdf_common.ColorRgba) void {
+    blendColor(&frame[pixel_index], src);
 }
 
 fn blitColorFrame(display: *display_logic.DisplayBuffer, frame: []const Color) !void {
@@ -592,25 +661,44 @@ fn renderSoapBubblesFrame(
     bubbles: []const SoapBubble,
     ctx: sdf_common.FrameContext,
 ) void {
-    clearColorFrame(frame, .{});
+    renderColorFrameSinglePass(display, frame, SoapBubblesPixelContext{
+        .bubbles = bubbles,
+        .frame_ctx = ctx,
+    }, shadeSoapBubblesPixel);
+}
+
+fn shadeSoapBubblesPixel(
+    display: *const display_logic.DisplayBuffer,
+    x: u16,
+    y: u16,
+    px: f32,
+    py: f32,
+    pixel: *Color,
+    render_ctx: SoapBubblesPixelContext,
+) void {
+    _ = x;
+    _ = y;
+    const t = render_ctx.frame_ctx.timeSeconds();
+    const width_f = @as(f32, @floatFromInt(display.width));
     inline for ([_]bool{ false, true }) |front_pass| {
-        for (bubbles) |bubble| {
+        for (render_ctx.bubbles) |bubble| {
             if (!bubble.active) continue;
-            const depth = std.math.sin((ctx.timeSeconds() * 0.75) + bubble.depth_phase);
+            const depth = std.math.sin((t * 0.75) + bubble.depth_phase);
             const is_front = depth >= 0.0;
             if (is_front != front_pass) continue;
-            renderSoapBubble(display, frame, bubble, ctx);
+            renderSoapBubblePixel(pixel, px, py, width_f, bubble, render_ctx.frame_ctx);
         }
     }
 }
 
-fn renderSoapBubble(
-    display: *const display_logic.DisplayBuffer,
-    frame: []Color,
+fn renderSoapBubblePixel(
+    pixel: *Color,
+    px: f32,
+    py: f32,
+    width_f: f32,
     bubble: SoapBubble,
     ctx: sdf_common.FrameContext,
 ) void {
-    const width_f = @as(f32, @floatFromInt(display.width));
     const t = ctx.timeSeconds();
     const center_x = wrapFloat(bubble.lane_x + (std.math.sin((t * bubble.wobble_freq) + bubble.phase) * bubble.wobble_amp), width_f);
     const center_y = bubble.y + (std.math.sin((t * 0.7) + (bubble.phase * 0.5)) * 0.3);
@@ -621,48 +709,39 @@ fn renderSoapBubble(
     const body_scale = if (bubble.popping) 1.0 - (0.55 * std.math.clamp(pop_t, 0.0, 1.0)) else 1.0;
     const body_radius = bubble.radius * body_scale;
 
-    var y: u16 = 0;
-    while (y < display.height) : (y += 1) {
-        const py = @as(f32, @floatFromInt(y)) + 0.5;
-        var x: u16 = 0;
-        while (x < display.width) : (x += 1) {
-            const px = @as(f32, @floatFromInt(x)) + 0.5;
-            const local = sdf_common.Vec2.init(wrappedDeltaX(px, center_x, width_f), py - center_y);
-            const d_circle = sdf_common.sdfCircle(local, body_radius);
-            const shell_alpha = 1.0 - sdf_common.smoothstep(0.05, 0.85, @abs(d_circle));
-            const center_alpha = (1.0 - sdf_common.smoothstep(-body_radius, 0.0, d_circle)) * 0.12;
-            const highlight = sdf_common.Vec2.sub(local, sdf_common.Vec2.init(-body_radius * 0.4, body_radius * 0.34));
-            const highlight_d = sdf_common.sdfCircle(highlight, body_radius * 0.23);
-            const highlight_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.55, highlight_d)) * 0.26;
+    const local = sdf_common.Vec2.init(wrappedDeltaX(px, center_x, width_f), py - center_y);
+    const d_circle = sdf_common.sdfCircle(local, body_radius);
+    const shell_alpha = 1.0 - sdf_common.smoothstep(0.05, 0.85, @abs(d_circle));
+    const center_alpha = (1.0 - sdf_common.smoothstep(-body_radius, 0.0, d_circle)) * 0.12;
+    const highlight = sdf_common.Vec2.sub(local, sdf_common.Vec2.init(-body_radius * 0.4, body_radius * 0.34));
+    const highlight_d = sdf_common.sdfCircle(highlight, body_radius * 0.23);
+    const highlight_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.55, highlight_d)) * 0.26;
 
-            var body_alpha = std.math.clamp((shell_alpha * 0.46) + center_alpha + highlight_alpha, 0.0, 0.86);
-            if (bubble.popping) body_alpha *= 1.0 - std.math.clamp(pop_t, 0.0, 1.0);
+    var body_alpha = std.math.clamp((shell_alpha * 0.46) + center_alpha + highlight_alpha, 0.0, 0.86);
+    if (bubble.popping) body_alpha *= 1.0 - std.math.clamp(pop_t, 0.0, 1.0);
 
-            const pixel_index = logicalPixelIndex(display, x, y);
-            if (body_alpha > 0.0001) {
-                const tint = 0.5 + (0.5 * std.math.sin((t * 0.8) + bubble.phase));
-                blendFramePixel(frame, pixel_index, .{
-                    .r = std.math.clamp(0.66 + (0.2 * tint), 0.0, 1.0),
-                    .g = std.math.clamp(0.82 + (0.12 * tint), 0.0, 1.0),
-                    .b = 1.0,
-                    .a = body_alpha,
-                });
-            }
+    if (body_alpha > 0.0001) {
+        const tint = 0.5 + (0.5 * std.math.sin((t * 0.8) + bubble.phase));
+        blendColor(pixel, .{
+            .r = std.math.clamp(0.66 + (0.2 * tint), 0.0, 1.0),
+            .g = std.math.clamp(0.82 + (0.12 * tint), 0.0, 1.0),
+            .b = 1.0,
+            .a = body_alpha,
+        });
+    }
 
-            if (bubble.popping) {
-                const ring_radius = body_radius + ((bubble.radius + 0.8) * std.math.clamp(pop_t, 0.0, 1.0));
-                const ring_width = 0.12 + ((1.0 - std.math.clamp(pop_t, 0.0, 1.0)) * 0.18);
-                const ring_d = @abs(sdf_common.sdfCircle(local, ring_radius)) - ring_width;
-                const ring_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.65, ring_d)) * (1.0 - std.math.clamp(pop_t, 0.0, 1.0)) * 0.85;
-                if (ring_alpha > 0.0001) {
-                    blendFramePixel(frame, pixel_index, .{
-                        .r = 0.58,
-                        .g = 0.88,
-                        .b = 1.0,
-                        .a = ring_alpha,
-                    });
-                }
-            }
+    if (bubble.popping) {
+        const ring_radius = body_radius + ((bubble.radius + 0.8) * std.math.clamp(pop_t, 0.0, 1.0));
+        const ring_width = 0.12 + ((1.0 - std.math.clamp(pop_t, 0.0, 1.0)) * 0.18);
+        const ring_d = @abs(sdf_common.sdfCircle(local, ring_radius)) - ring_width;
+        const ring_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.65, ring_d)) * (1.0 - std.math.clamp(pop_t, 0.0, 1.0)) * 0.85;
+        if (ring_alpha > 0.0001) {
+            blendColor(pixel, .{
+                .r = 0.58,
+                .g = 0.88,
+                .b = 1.0,
+                .a = ring_alpha,
+            });
         }
     }
 }
@@ -723,108 +802,99 @@ fn renderCampfireFrame(
     tongues: []const CampfireTongue,
     ctx: sdf_common.FrameContext,
 ) void {
-    clearColorFrame(frame, .{});
-    renderCampfireEmbers(display, frame, ctx);
-    for (tongues) |tongue| {
-        if (!tongue.active) continue;
-        renderCampfireTongue(display, frame, tongue, ctx);
-    }
+    renderColorFrameSinglePass(display, frame, CampfirePixelContext{
+        .tongues = tongues,
+        .frame_ctx = ctx,
+    }, shadeCampfirePixel);
 }
 
-fn renderCampfireEmbers(
+fn shadeCampfirePixel(
     display: *const display_logic.DisplayBuffer,
-    frame: []Color,
-    ctx: sdf_common.FrameContext,
+    x: u16,
+    y: u16,
+    px: f32,
+    py: f32,
+    pixel: *Color,
+    render_ctx: CampfirePixelContext,
 ) void {
+    _ = y;
+    const t = render_ctx.frame_ctx.timeSeconds();
     const width_f = @as(f32, @floatFromInt(display.width));
     const height_f = @as(f32, @floatFromInt(display.height));
     const cluster_count: usize = 6;
     const cluster_width = width_f / @as(f32, @floatFromInt(cluster_count));
-
-    var y: u16 = 0;
-    while (y < display.height) : (y += 1) {
-        const py = @as(f32, @floatFromInt(y)) + 0.5;
-        const h_norm = py / @max(1.0, height_f - 1.0);
-        var x: u16 = 0;
-        while (x < display.width) : (x += 1) {
-            const px = @as(f32, @floatFromInt(x)) + 0.5;
-            var best_d = std.math.floatMax(f32);
-
-            var cluster_idx: usize = 0;
-            while (cluster_idx < cluster_count) : (cluster_idx += 1) {
-                const cluster_phase = @as(f32, @floatFromInt(cluster_idx));
-                const center_x = ((cluster_phase + 0.5) * cluster_width) + (std.math.sin((ctx.timeSeconds() * 0.65) + cluster_phase) * 0.55);
-                const local = sdf_common.Vec2.init(wrappedDeltaX(px, center_x, width_f), py - (height_f - 1.4));
-                const box_d = sdf_common.sdfBox(local, sdf_common.Vec2.init(1.6, 1.0));
-                if (box_d < best_d) best_d = box_d;
-            }
-
-            const alpha = (1.0 - sdf_common.smoothstep(-0.1, 1.25, best_d)) * 0.58;
-            if (alpha <= 0.0001) continue;
-
-            const color = campfireGradient(h_norm, 0.65);
-            const pixel_index = logicalPixelIndex(display, x, y);
-            blendFramePixel(frame, pixel_index, .{
-                .r = color.r,
-                .g = color.g,
-                .b = color.b,
-                .a = alpha,
-            });
-        }
-    }
-}
-
-fn renderCampfireTongue(
-    display: *const display_logic.DisplayBuffer,
-    frame: []Color,
-    tongue: CampfireTongue,
-    ctx: sdf_common.FrameContext,
-) void {
-    const width_f = @as(f32, @floatFromInt(display.width));
-    const height_f = @as(f32, @floatFromInt(display.height));
-    const t = ctx.timeSeconds();
+    const h_norm = py / @max(1.0, height_f - 1.0);
+    const density = sdf_common.smoothstep(0.0, 1.0, h_norm);
     const burst_drive = (std.math.sin((t * 0.9) + 0.6) + 1.0) * 0.5;
     const burst = sdf_common.smoothstep(0.6, 0.95, burst_drive);
 
-    var y: u16 = 0;
-    while (y < display.height) : (y += 1) {
-        const py = @as(f32, @floatFromInt(y)) + 0.5;
-        const h_norm = py / @max(1.0, height_f - 1.0);
-        const density = sdf_common.smoothstep(0.0, 1.0, h_norm);
-        var x: u16 = 0;
-        while (x < display.width) : (x += 1) {
-            const px = @as(f32, @floatFromInt(x)) + 0.5;
-            const sway = std.math.sin((t * 5.8) + tongue.drift_phase + (py * 0.08)) * (0.45 + (0.55 * burst));
-            const local = sdf_common.Vec2.init(wrappedDeltaX(px, tongue.lane_x + sway, width_f), py - tongue.y);
-            const stretched = sdf_common.Vec2.init(local.x * 1.25, local.y * 0.52);
-            const d_main = sdf_common.sdfCircle(stretched, tongue.radius);
-            const tip = sdf_common.Vec2.sub(stretched, sdf_common.Vec2.init(0.0, tongue.radius * 0.85));
-            const d_tip = sdf_common.sdfCircle(tip, tongue.radius * 0.74);
-            const d = @min(d_main, d_tip);
-            const body = 1.0 - sdf_common.smoothstep(0.0, 1.45, d);
-            if (body <= 0.0001) continue;
+    var best_d = std.math.floatMax(f32);
+    var cluster_idx: usize = 0;
+    while (cluster_idx < cluster_count) : (cluster_idx += 1) {
+        const cluster_phase = @as(f32, @floatFromInt(cluster_idx));
+        const center_x = ((cluster_phase + 0.5) * cluster_width) + (std.math.sin((t * 0.65) + cluster_phase) * 0.55);
+        const local = sdf_common.Vec2.init(wrappedDeltaX(px, center_x, width_f), py - (height_f - 1.4));
+        const box_d = sdf_common.sdfBox(local, sdf_common.Vec2.init(1.6, 1.0));
+        if (box_d < best_d) best_d = box_d;
+    }
 
-            const flicker = 0.55 + (0.45 * std.math.sin((t * 23.0) + tongue.flicker_phase + (@as(f32, @floatFromInt(x)) * 0.11)));
-            const alpha = body * (0.18 + (density * 0.72)) * flicker;
-            const color = campfireGradient(h_norm, density * (0.6 + (0.4 * flicker)));
-            const pixel_index = logicalPixelIndex(display, x, y);
-            blendFramePixel(frame, pixel_index, .{
-                .r = color.r,
-                .g = color.g,
-                .b = color.b,
-                .a = std.math.clamp(alpha, 0.0, 0.98),
-            });
+    const alpha = (1.0 - sdf_common.smoothstep(-0.1, 1.25, best_d)) * 0.58;
+    if (alpha > 0.0001) {
+        const color = campfireGradient(h_norm, 0.65);
+        blendColor(pixel, .{
+            .r = color.r,
+            .g = color.g,
+            .b = color.b,
+            .a = alpha,
+        });
+    }
 
-            const hot = body * density * sdf_common.smoothstep(0.72, 1.0, flicker) * 0.27;
-            if (hot > 0.0001) {
-                blendFramePixel(frame, pixel_index, .{
-                    .r = 1.0,
-                    .g = 0.95,
-                    .b = 0.82,
-                    .a = hot,
-                });
-            }
-        }
+    for (render_ctx.tongues) |tongue| {
+        if (!tongue.active) continue;
+        renderCampfireTonguePixel(pixel, x, px, py, width_f, h_norm, density, t, burst, tongue);
+    }
+}
+
+fn renderCampfireTonguePixel(
+    pixel: *Color,
+    x: u16,
+    px: f32,
+    py: f32,
+    width_f: f32,
+    h_norm: f32,
+    density: f32,
+    t: f32,
+    burst: f32,
+    tongue: CampfireTongue,
+) void {
+    const sway = std.math.sin((t * 5.8) + tongue.drift_phase + (py * 0.08)) * (0.45 + (0.55 * burst));
+    const local = sdf_common.Vec2.init(wrappedDeltaX(px, tongue.lane_x + sway, width_f), py - tongue.y);
+    const stretched = sdf_common.Vec2.init(local.x * 1.25, local.y * 0.52);
+    const d_main = sdf_common.sdfCircle(stretched, tongue.radius);
+    const tip = sdf_common.Vec2.sub(stretched, sdf_common.Vec2.init(0.0, tongue.radius * 0.85));
+    const d_tip = sdf_common.sdfCircle(tip, tongue.radius * 0.74);
+    const d = @min(d_main, d_tip);
+    const body = 1.0 - sdf_common.smoothstep(0.0, 1.45, d);
+    if (body <= 0.0001) return;
+
+    const flicker = 0.55 + (0.45 * std.math.sin((t * 23.0) + tongue.flicker_phase + (@as(f32, @floatFromInt(x)) * 0.11)));
+    const alpha = body * (0.18 + (density * 0.72)) * flicker;
+    const color = campfireGradient(h_norm, density * (0.6 + (0.4 * flicker)));
+    blendColor(pixel, .{
+        .r = color.r,
+        .g = color.g,
+        .b = color.b,
+        .a = std.math.clamp(alpha, 0.0, 0.98),
+    });
+
+    const hot = body * density * sdf_common.smoothstep(0.72, 1.0, flicker) * 0.27;
+    if (hot > 0.0001) {
+        blendColor(pixel, .{
+            .r = 1.0,
+            .g = 0.95,
+            .b = 0.82,
+            .a = hot,
+        });
     }
 }
 
@@ -865,57 +935,63 @@ fn renderAuroraRibbonsFrame(
     layer_count: usize,
     ctx: sdf_common.FrameContext,
 ) void {
-    clearColorFrame(frame, .{});
+    renderColorFrameSinglePass(display, frame, AuroraRibbonsPixelContext{
+        .layer_count = layer_count,
+        .frame_ctx = ctx,
+    }, shadeAuroraRibbonsPixel);
+}
+
+fn shadeAuroraRibbonsPixel(
+    display: *const display_logic.DisplayBuffer,
+    x: u16,
+    y: u16,
+    px: f32,
+    py: f32,
+    pixel: *Color,
+    render_ctx: AuroraRibbonsPixelContext,
+) void {
+    _ = x;
+    _ = y;
     const width_f = @as(f32, @floatFromInt(display.width));
     const height_f = @as(f32, @floatFromInt(display.height));
     const two_pi = std.math.pi * 2.0;
-    const t = ctx.timeSeconds();
+    const t = render_ctx.frame_ctx.timeSeconds();
+    const theta = (px / width_f) * two_pi;
 
     var layer_idx: usize = 0;
-    while (layer_idx < layer_count) : (layer_idx += 1) {
+    while (layer_idx < render_ctx.layer_count) : (layer_idx += 1) {
         const layer = aurora_layers[layer_idx];
         const alpha_scale = 0.16 + (@as(f32, @floatFromInt(layer_idx)) * 0.05);
+        const centerline = auroraLayerCenterline(theta, render_ctx.frame_ctx, layer, height_f);
+        const breathing = std.math.sin((t * 0.35) + layer.phase + (@as(f32, @floatFromInt(layer_idx)) * 0.4));
+        const thickness = layer.width + (breathing * 0.9);
+        const band_local = sdf_common.Vec2.init(0.0, py - centerline);
+        const band_d = sdf_common.sdfBox(band_local, sdf_common.Vec2.init(width_f, thickness));
+        const band_alpha = (1.0 - sdf_common.smoothstep(0.0, 1.9, band_d)) * alpha_scale;
+        if (band_alpha > 0.0001) {
+            const hue_phase = (t * 0.2) + layer.phase + theta;
+            blendColor(pixel, .{
+                .r = 0.18 + (0.22 * (0.5 + (0.5 * std.math.sin(hue_phase + 2.0)))),
+                .g = 0.42 + (0.46 * (0.5 + (0.5 * std.math.sin(hue_phase)))),
+                .b = 0.46 + (0.42 * (0.5 + (0.5 * std.math.sin(hue_phase + 4.0)))),
+                .a = band_alpha,
+            });
+        }
 
-        var y: u16 = 0;
-        while (y < display.height) : (y += 1) {
-            const py = @as(f32, @floatFromInt(y)) + 0.5;
-            var x: u16 = 0;
-            while (x < display.width) : (x += 1) {
-                const px = @as(f32, @floatFromInt(x)) + 0.5;
-                const theta = (px / width_f) * two_pi;
-                const centerline = auroraLayerCenterline(theta, ctx, layer, height_f);
-                const breathing = std.math.sin((t * 0.35) + layer.phase + (@as(f32, @floatFromInt(layer_idx)) * 0.4));
-                const thickness = layer.width + (breathing * 0.9);
-                const band_local = sdf_common.Vec2.init(0.0, py - centerline);
-                const band_d = sdf_common.sdfBox(band_local, sdf_common.Vec2.init(width_f, thickness));
-                const band_alpha = (1.0 - sdf_common.smoothstep(0.0, 1.9, band_d)) * alpha_scale;
-                if (band_alpha > 0.0001) {
-                    const hue_phase = (t * 0.2) + layer.phase + theta;
-                    const color = sdf_common.ColorRgba{
-                        .r = 0.18 + (0.22 * (0.5 + (0.5 * std.math.sin(hue_phase + 2.0)))),
-                        .g = 0.42 + (0.46 * (0.5 + (0.5 * std.math.sin(hue_phase)))),
-                        .b = 0.46 + (0.42 * (0.5 + (0.5 * std.math.sin(hue_phase + 4.0)))),
-                        .a = band_alpha,
-                    };
-                    blendFramePixel(frame, logicalPixelIndex(display, x, y), color);
-                }
-
-                const accent_center = centerline + (std.math.sin((theta * 4.0) + (t * 0.55) + layer.phase) * 1.3);
-                const accent_d = sdf_common.sdfBox(
-                    sdf_common.Vec2.init(0.0, py - accent_center),
-                    sdf_common.Vec2.init(width_f, @max(0.4, thickness * 0.26)),
-                );
-                const crest = sdf_common.smoothstep(0.55, 1.0, std.math.sin((theta * 2.0) + (t * 0.5) + layer.phase));
-                const accent_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.95, accent_d)) * crest * 0.2;
-                if (accent_alpha > 0.0001) {
-                    blendFramePixel(frame, logicalPixelIndex(display, x, y), .{
-                        .r = 0.88,
-                        .g = 0.9,
-                        .b = 0.95,
-                        .a = accent_alpha,
-                    });
-                }
-            }
+        const accent_center = centerline + (std.math.sin((theta * 4.0) + (t * 0.55) + layer.phase) * 1.3);
+        const accent_d = sdf_common.sdfBox(
+            sdf_common.Vec2.init(0.0, py - accent_center),
+            sdf_common.Vec2.init(width_f, @max(0.4, thickness * 0.26)),
+        );
+        const crest = sdf_common.smoothstep(0.55, 1.0, std.math.sin((theta * 2.0) + (t * 0.5) + layer.phase));
+        const accent_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.95, accent_d)) * crest * 0.2;
+        if (accent_alpha > 0.0001) {
+            blendColor(pixel, .{
+                .r = 0.88,
+                .g = 0.9,
+                .b = 0.95,
+                .a = accent_alpha,
+            });
         }
     }
 }
@@ -1038,107 +1114,109 @@ fn renderRainRippleFrame(
     ripples: []const RainRipple,
     ctx: sdf_common.FrameContext,
 ) void {
-    clearColorFrame(frame, .{});
-    for (drops) |drop| {
+    renderColorFrameSinglePass(display, frame, RainRipplePixelContext{
+        .drops = drops,
+        .ripples = ripples,
+        .frame_ctx = ctx,
+    }, shadeRainRipplePixel);
+}
+
+fn shadeRainRipplePixel(
+    display: *const display_logic.DisplayBuffer,
+    x: u16,
+    y: u16,
+    px: f32,
+    py: f32,
+    pixel: *Color,
+    render_ctx: RainRipplePixelContext,
+) void {
+    _ = x;
+    const width_f = @as(f32, @floatFromInt(display.width));
+    const t = render_ctx.frame_ctx.timeSeconds();
+    for (render_ctx.drops) |drop| {
         if (!drop.active) continue;
-        renderRainDrop(display, frame, drop, ripples, ctx);
+        renderRainDropPixel(pixel, y, px, py, width_f, drop, render_ctx.ripples, t);
     }
-    for (ripples) |ripple| {
+    for (render_ctx.ripples) |ripple| {
         if (!ripple.active) continue;
-        renderRainRipple(display, frame, ripple);
+        renderRainRipplePixel(pixel, px, py, width_f, ripple);
     }
 }
 
-fn renderRainDrop(
-    display: *const display_logic.DisplayBuffer,
-    frame: []Color,
+fn renderRainDropPixel(
+    pixel: *Color,
+    y: u16,
+    px: f32,
+    py: f32,
+    width_f: f32,
     drop: RainDrop,
     ripples: []const RainRipple,
-    ctx: sdf_common.FrameContext,
+    t: f32,
 ) void {
-    const width_f = @as(f32, @floatFromInt(display.width));
-    const t = ctx.timeSeconds();
+    const dx = wrappedDeltaX(px, drop.lane_x, width_f);
+    const streak_center = drop.y - (drop.tail * 0.5);
+    const streak_box = sdf_common.sdfBox(
+        sdf_common.Vec2.init(dx, py - streak_center),
+        sdf_common.Vec2.init(0.18, drop.tail * 0.5),
+    );
+    const streak_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.75, streak_box)) * 0.36;
+    const head_circle = sdf_common.sdfCircle(sdf_common.Vec2.init(dx, py - drop.y), 0.4);
+    const head_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.55, head_circle)) * 0.48;
 
-    var y: u16 = 0;
-    while (y < display.height) : (y += 1) {
-        const py = @as(f32, @floatFromInt(y)) + 0.5;
-        var x: u16 = 0;
-        while (x < display.width) : (x += 1) {
-            const px = @as(f32, @floatFromInt(x)) + 0.5;
-            const dx = wrappedDeltaX(px, drop.lane_x, width_f);
-            const streak_center = drop.y - (drop.tail * 0.5);
-            const streak_box = sdf_common.sdfBox(
-                sdf_common.Vec2.init(dx, py - streak_center),
-                sdf_common.Vec2.init(0.18, drop.tail * 0.5),
-            );
-            const streak_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.75, streak_box)) * 0.36;
-            const head_circle = sdf_common.sdfCircle(sdf_common.Vec2.init(dx, py - drop.y), 0.4);
-            const head_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.55, head_circle)) * 0.48;
-
-            var ripple_boost: f32 = 0.0;
-            for (ripples) |ripple| {
-                if (!ripple.active or ripple.life_frames == 0) continue;
-                const local = sdf_common.Vec2.init(wrappedDeltaX(px, ripple.x, width_f), py - ripple.y);
-                const dist = local.length();
-                const proximity = 1.0 - sdf_common.smoothstep(ripple.radius + 0.2, ripple.radius + 2.0, dist);
-                const fade = 1.0 - (@as(f32, @floatFromInt(ripple.age)) / @as(f32, @floatFromInt(ripple.life_frames)));
-                ripple_boost = @max(ripple_boost, proximity * fade);
-            }
-
-            const twinkle = 0.75 + (0.25 * std.math.sin((t * 13.0) + drop.phase + (@as(f32, @floatFromInt(y)) * 0.22)));
-            const alpha = (streak_alpha + head_alpha) * twinkle * (1.0 + (0.9 * ripple_boost));
-            if (alpha <= 0.0001) continue;
-
-            blendFramePixel(frame, logicalPixelIndex(display, x, y), .{
-                .r = std.math.clamp(0.62 + (0.2 * ripple_boost), 0.0, 1.0),
-                .g = std.math.clamp(0.76 + (0.18 * ripple_boost), 0.0, 1.0),
-                .b = 1.0,
-                .a = std.math.clamp(alpha, 0.0, 0.9),
-            });
-        }
+    var ripple_boost: f32 = 0.0;
+    for (ripples) |ripple| {
+        if (!ripple.active or ripple.life_frames == 0) continue;
+        const local = sdf_common.Vec2.init(wrappedDeltaX(px, ripple.x, width_f), py - ripple.y);
+        const dist = local.length();
+        const proximity = 1.0 - sdf_common.smoothstep(ripple.radius + 0.2, ripple.radius + 2.0, dist);
+        const fade = 1.0 - (@as(f32, @floatFromInt(ripple.age)) / @as(f32, @floatFromInt(ripple.life_frames)));
+        ripple_boost = @max(ripple_boost, proximity * fade);
     }
+
+    const twinkle = 0.75 + (0.25 * std.math.sin((t * 13.0) + drop.phase + (@as(f32, @floatFromInt(y)) * 0.22)));
+    const alpha = (streak_alpha + head_alpha) * twinkle * (1.0 + (0.9 * ripple_boost));
+    if (alpha <= 0.0001) return;
+
+    blendColor(pixel, .{
+        .r = std.math.clamp(0.62 + (0.2 * ripple_boost), 0.0, 1.0),
+        .g = std.math.clamp(0.76 + (0.18 * ripple_boost), 0.0, 1.0),
+        .b = 1.0,
+        .a = std.math.clamp(alpha, 0.0, 0.9),
+    });
 }
 
-fn renderRainRipple(
-    display: *const display_logic.DisplayBuffer,
-    frame: []Color,
+fn renderRainRipplePixel(
+    pixel: *Color,
+    px: f32,
+    py: f32,
+    width_f: f32,
     ripple: RainRipple,
 ) void {
     if (ripple.life_frames == 0) return;
-    const width_f = @as(f32, @floatFromInt(display.width));
     const fade = 1.0 - (@as(f32, @floatFromInt(ripple.age)) / @as(f32, @floatFromInt(ripple.life_frames)));
     const clamped_fade = sdf_common.clamp01(fade);
 
-    var y: u16 = 0;
-    while (y < display.height) : (y += 1) {
-        const py = @as(f32, @floatFromInt(y)) + 0.5;
-        var x: u16 = 0;
-        while (x < display.width) : (x += 1) {
-            const px = @as(f32, @floatFromInt(x)) + 0.5;
-            const local = sdf_common.Vec2.init(wrappedDeltaX(px, ripple.x, width_f), py - ripple.y);
-            const ring_d = @abs(sdf_common.sdfCircle(local, ripple.radius)) - ripple.thickness;
-            const ring_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.8, ring_d)) * clamped_fade * 0.68;
-            const pixel_index = logicalPixelIndex(display, x, y);
-            if (ring_alpha > 0.0001) {
-                blendFramePixel(frame, pixel_index, .{
-                    .r = 0.35,
-                    .g = 0.78,
-                    .b = 1.0,
-                    .a = ring_alpha,
-                });
-            }
+    const local = sdf_common.Vec2.init(wrappedDeltaX(px, ripple.x, width_f), py - ripple.y);
+    const ring_d = @abs(sdf_common.sdfCircle(local, ripple.radius)) - ripple.thickness;
+    const ring_alpha = (1.0 - sdf_common.smoothstep(0.0, 0.8, ring_d)) * clamped_fade * 0.68;
+    if (ring_alpha > 0.0001) {
+        blendColor(pixel, .{
+            .r = 0.35,
+            .g = 0.78,
+            .b = 1.0,
+            .a = ring_alpha,
+        });
+    }
 
-            const glow_d = sdf_common.sdfCircle(local, (ripple.radius * 0.35) + 0.75);
-            const glow_alpha = (1.0 - sdf_common.smoothstep(0.0, 2.4, glow_d)) * clamped_fade * 0.12;
-            if (glow_alpha > 0.0001) {
-                blendFramePixel(frame, pixel_index, .{
-                    .r = 0.18,
-                    .g = 0.4,
-                    .b = 0.7,
-                    .a = glow_alpha,
-                });
-            }
-        }
+    const glow_d = sdf_common.sdfCircle(local, (ripple.radius * 0.35) + 0.75);
+    const glow_alpha = (1.0 - sdf_common.smoothstep(0.0, 2.4, glow_d)) * clamped_fade * 0.12;
+    if (glow_alpha > 0.0001) {
+        blendColor(pixel, .{
+            .r = 0.18,
+            .g = 0.4,
+            .b = 0.7,
+            .a = glow_alpha,
+        });
     }
 }
 
@@ -1294,6 +1372,30 @@ fn drawInfiniteWrappedLineOnDisplay(
             if (distance <= line_half_width) {
                 try display.setPixel(@as(i32, @intCast(x)), y, pixel);
             }
+        }
+    }
+}
+
+fn shadeInfiniteLinesPixel(
+    display: *const display_logic.DisplayBuffer,
+    x: u16,
+    y: u16,
+    px: f32,
+    py: f32,
+    pixel: *Color,
+    render_ctx: InfiniteLinesPixelContext,
+) void {
+    _ = x;
+    _ = y;
+    const width_f = @as(f32, @floatFromInt(display.width));
+    for (render_ctx.lines) |line| {
+        const direction_x = std.math.cos(line.angle);
+        const direction_y = std.math.sin(line.angle);
+        const normal_x = -direction_y;
+        const normal_y = direction_x;
+        const distance = wrappedLineDistance(px, py, line.pivot_x, line.pivot_y, normal_x, normal_y, width_f);
+        if (distance <= render_ctx.line_half_width) {
+            pixel.* = line.color;
         }
     }
 }

@@ -76,3 +76,4 @@ https://github.com/robkaandorp/tcp_led_stream
 - Keep code clear, simple, and easy to read.
 - Prefer less code when it improves clarity and maintainability.
 - Keep allocations and deallocations to a minimum; prefer allocating most required memory during startup.
+- For effect rendering, use the single-pass frame traversal abstraction (`renderColorFrameSinglePass` in `src\effects.zig`) so each logical pixel is visited once per frame.

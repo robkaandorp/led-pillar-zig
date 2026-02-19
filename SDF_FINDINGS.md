@@ -39,6 +39,7 @@ Concise notes from Inigo Quilez articles, focused on reusable guidance for this 
 3. For blends, pick smooth union `k` in pixel-scale terms and test seam behavior at wrap boundary.
 4. When layering fields, use premultiplied-alpha front-to-back composition math.
 5. Validate visually in simulator with explicit seam tests (objects crossing `x=29 -> 0`).
+6. Prefer single-pass per-pixel frame rendering (visit each pixel once, evaluate all contributors per pixel) to avoid repeated full-frame scans.
 
 ## IQ article links
 
