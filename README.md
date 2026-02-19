@@ -62,6 +62,7 @@ https://github.com/robkaandorp/tcp_led_stream
   - `rain-ripple`: raindrop ripples across the display
   - `infinite-line [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
   - `infinite-lines [line_count] [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
+  - `dsl-file <path-to-effect.dsl>`
 - On normal exit or `Ctrl+C`, the sender clears the LED display to black before disconnecting.
 - Run console TCP display simulator: `zig build simulator -- [port]`
 - The simulator renders the matrix and prints live stats (FPS, bytes/s, total frames, total bytes) below it.
@@ -69,6 +70,9 @@ https://github.com/robkaandorp/tcp_led_stream
 - Run tests in the library module: `zig test src\root.zig`
 - Run tests in the executable module: `zig test src\main.zig`
 - Run a single test by name filter: `zig test src\root.zig --test-filter "<test name>"`
+- DSL feasibility research and example syntax: `DSL_FEASIBILITY_FINDINGS.md`
+- DSL v1 parser language spec: `DSL_V1_LANGUAGE.md`
+- DSL v1 example files: `examples\dsl\v1\`
 
 ## Development principles
 

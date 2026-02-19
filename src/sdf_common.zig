@@ -136,6 +136,32 @@ pub fn remapLinear(
     return out_min + (t * (out_max - out_min));
 }
 
+pub fn hashU32(value: u32) u32 {
+    var x = value;
+    x ^= x >> 16;
+    x *%= 0x7feb_352d;
+    x ^= x >> 15;
+    x *%= 0x846c_a68b;
+    x ^= x >> 16;
+    return x;
+}
+
+pub fn hash01(value: u32) Float {
+    const hashed = hashU32(value) & 0x00ff_ffff;
+    return @as(Float, @floatFromInt(hashed)) / 16_777_215.0;
+}
+
+pub fn hashSigned(value: u32) Float {
+    return (hash01(value) * 2.0) - 1.0;
+}
+
+pub fn hashCoords01(x: i32, y: i32, seed: u32) Float {
+    const ux: u32 = @bitCast(x);
+    const uy: u32 = @bitCast(y);
+    const mixed = (ux *% 0x1f12_3bb5) ^ (uy *% 0x5f35_6495) ^ seed;
+    return hash01(mixed);
+}
+
 pub fn sdfCircle(point: Vec2, radius: Float) Float {
     return point.length() - radius;
 }
@@ -177,4 +203,21 @@ test "linear and smooth helpers map values predictably" {
     try std.testing.expectApproxEqAbs(@as(Float, 0.5), linearstep(0.0, 10.0, 5.0), 0.0001);
     try std.testing.expectApproxEqAbs(@as(Float, 5.0), remapLinear(0.5, 0.0, 1.0, 0.0, 10.0), 0.0001);
     try std.testing.expectApproxEqAbs(@as(Float, 0.5), smoothstep(0.0, 1.0, 0.5), 0.0001);
+}
+
+test "hash helpers are deterministic and bounded" {
+    const a = hash01(0x1234_5678);
+    const b = hash01(0x1234_5678);
+    try std.testing.expectApproxEqAbs(a, b, 0.0);
+    try std.testing.expect(a >= 0.0 and a <= 1.0);
+
+    const signed = hashSigned(0x1234_5678);
+    try std.testing.expect(signed >= -1.0 and signed <= 1.0);
+}
+
+test "hashCoords01 is deterministic for coordinates and seed" {
+    const a = hashCoords01(12, -5, 0x99aa_77cc);
+    const b = hashCoords01(12, -5, 0x99aa_77cc);
+    try std.testing.expectApproxEqAbs(a, b, 0.0);
+    try std.testing.expect(a >= 0.0 and a <= 1.0);
 }

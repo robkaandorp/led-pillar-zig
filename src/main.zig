@@ -14,6 +14,7 @@ const EffectKind = enum {
     rain_ripple,
     infinite_line,
     infinite_lines,
+    dsl_file,
 };
 
 const RunConfig = struct {
@@ -26,6 +27,7 @@ const RunConfig = struct {
     infinite_rotation_period_seconds: u16 = 18,
     infinite_color_transition_seconds: u16 = 10,
     infinite_line_width_pixels: u16 = 1,
+    dsl_file_path: ?[]const u8 = null,
 };
 
 pub fn main() !void {
@@ -115,6 +117,13 @@ pub fn main() !void {
             .color_transition_seconds = run_config.infinite_color_transition_seconds,
             .line_width_pixels = run_config.infinite_line_width_pixels,
         }, &shutdown_requested),
+        .dsl_file => try runDslFileEffect(
+            &client,
+            &display,
+            run_config.frame_rate_hz,
+            run_config.dsl_file_path orelse return error.MissingDslPath,
+            &shutdown_requested,
+        ),
     }
 }
 
@@ -122,6 +131,98 @@ fn clearDisplayOnExit(client: *led.TcpClient, display: *led.DisplayBuffer) !void
     try led.effects.fillSolid(display, .{});
     try client.sendFrame(display.payload());
     try client.finishPendingFrame();
+}
+
+fn runDslFileEffect(
+    client: *led.TcpClient,
+    display: *led.DisplayBuffer,
+    frame_rate_hz: u16,
+    dsl_file_path: []const u8,
+    stop_flag: *const led.effects.StopFlag,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const source = try std.fs.cwd().readFileAlloc(arena.allocator(), dsl_file_path, std.math.maxInt(usize));
+    const program = try led.dsl_parser.parseAndValidate(arena.allocator(), source);
+    var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
+    defer evaluator.deinit();
+
+    const pixel_count = @as(usize, @intCast(display.pixel_count));
+    const frame = try std.heap.page_allocator.alloc(led.effects.Color, pixel_count);
+    defer std.heap.page_allocator.free(frame);
+
+    const frame_period_ns = std.time.ns_per_s / @as(u64, frame_rate_hz);
+    const frame_rate_f = @as(f32, @floatFromInt(frame_rate_hz));
+    var frame_number: u64 = 0;
+    var next_send_ns = std.time.nanoTimestamp();
+
+    while (!stop_flag.load(.seq_cst)) {
+        const now = std.time.nanoTimestamp();
+        if (now < next_send_ns) {
+            std.Thread.sleep(@as(u64, @intCast(next_send_ns - now)));
+        }
+
+        try evaluator.renderFrame(display, frame, frame_number, frame_rate_f);
+        try blitDslFrameToDisplay(display, frame);
+        try client.sendFrame(display.payload());
+
+        frame_number +%= 1;
+        next_send_ns = std.time.nanoTimestamp() + @as(i128, @intCast(frame_period_ns));
+    }
+}
+
+fn blitDslFrameToDisplay(display: *led.DisplayBuffer, frame: []const led.effects.Color) !void {
+    const required = @as(usize, @intCast(display.pixel_count));
+    if (frame.len < required) return error.InvalidFrameBufferLength;
+
+    var encoded: [4]u8 = undefined;
+    var y: u16 = 0;
+    while (y < display.height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < display.width) : (x += 1) {
+            const idx = (@as(usize, y) * @as(usize, display.width)) + @as(usize, x);
+            const pixel = encodeFrameColor(display.pixel_format, frame[idx], &encoded);
+            try display.setPixel(@as(i32, @intCast(x)), y, pixel);
+        }
+    }
+}
+
+fn encodeFrameColor(format: led.PixelFormat, color: led.effects.Color, output: *[4]u8) []const u8 {
+    return switch (format) {
+        .rgb => blk: {
+            output[0] = color.r;
+            output[1] = color.g;
+            output[2] = color.b;
+            break :blk output[0..3];
+        },
+        .rgbw => blk: {
+            output[0] = color.r;
+            output[1] = color.g;
+            output[2] = color.b;
+            output[3] = color.w;
+            break :blk output[0..4];
+        },
+        .grb => blk: {
+            output[0] = color.g;
+            output[1] = color.r;
+            output[2] = color.b;
+            break :blk output[0..3];
+        },
+        .grbw => blk: {
+            output[0] = color.g;
+            output[1] = color.r;
+            output[2] = color.b;
+            output[3] = color.w;
+            break :blk output[0..4];
+        },
+        .bgr => blk: {
+            output[0] = color.b;
+            output[1] = color.g;
+            output[2] = color.r;
+            break :blk output[0..3];
+        },
+    };
 }
 
 fn windowsCtrlHandler(ctrl_type: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
@@ -207,6 +308,10 @@ fn parseRunConfig(args: anytype) !RunConfig {
             }
             if (args.next() != null) return error.TooManyArguments;
         },
+        .dsl_file => {
+            run_config.dsl_file_path = args.next() orelse return error.MissingDslPath;
+            if (args.next() != null) return error.TooManyArguments;
+        },
     }
 
     return run_config;
@@ -222,6 +327,7 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
     if (std.mem.eql(u8, effect_arg, "rain-ripple")) return .rain_ripple;
     if (std.mem.eql(u8, effect_arg, "infinite-line")) return .infinite_line;
     if (std.mem.eql(u8, effect_arg, "infinite-lines")) return .infinite_lines;
+    if (std.mem.eql(u8, effect_arg, "dsl-file")) return .dsl_file;
     return error.UnknownEffect;
 }
 
@@ -242,9 +348,45 @@ test "parseEffectKind accepts known effect names" {
     try std.testing.expectEqual(.rain_ripple, try parseEffectKind("rain-ripple"));
     try std.testing.expectEqual(.infinite_line, try parseEffectKind("infinite-line"));
     try std.testing.expectEqual(.infinite_lines, try parseEffectKind("infinite-lines"));
+    try std.testing.expectEqual(.dsl_file, try parseEffectKind("dsl-file"));
 }
 
 test "parseMaybeU16 returns null for non-numeric strings" {
     try std.testing.expectEqual(@as(?u16, 123), try parseMaybeU16("123"));
     try std.testing.expectEqual(@as(?u16, null), try parseMaybeU16("running-dot"));
+}
+
+const TestArgs = struct {
+    values: []const []const u8,
+    index: usize = 0,
+
+    fn next(self: *TestArgs) ?[]const u8 {
+        if (self.index >= self.values.len) return null;
+        const value = self.values[self.index];
+        self.index += 1;
+        return value;
+    }
+};
+
+test "parseRunConfig parses dsl-file mode" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "127.0.0.1", "dsl-file", "examples\\dsl\\v1\\aurora.dsl" },
+    };
+    const run_config = try parseRunConfig(&args);
+    try std.testing.expectEqual(.dsl_file, run_config.effect);
+    try std.testing.expectEqualStrings("examples\\dsl\\v1\\aurora.dsl", run_config.dsl_file_path.?);
+}
+
+test "parseRunConfig dsl-file requires path" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "127.0.0.1", "dsl-file" },
+    };
+    try std.testing.expectError(error.MissingDslPath, parseRunConfig(&args));
+}
+
+test "parseRunConfig dsl-file rejects extra args" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "127.0.0.1", "dsl-file", "effect.dsl", "extra" },
+    };
+    try std.testing.expectError(error.TooManyArguments, parseRunConfig(&args));
 }

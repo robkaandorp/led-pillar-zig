@@ -3,6 +3,8 @@ pub const display_logic = @import("display_logic.zig");
 pub const effects = @import("effects.zig");
 pub const simulator = @import("simulator.zig");
 pub const sdf_common = @import("sdf_common.zig");
+pub const dsl_parser = @import("dsl_parser.zig");
+pub const dsl_runtime = @import("dsl_runtime.zig");
 
 pub const display_height: u16 = tcp_client.default_display_height;
 pub const display_width: u16 = tcp_client.default_display_width;
@@ -28,4 +30,6 @@ test {
     _ = @import("effects.zig");
     _ = @import("simulator.zig");
     _ = @import("sdf_common.zig");
+    _ = @import("dsl_parser.zig");
+    _ = @import("dsl_runtime.zig");
 }
