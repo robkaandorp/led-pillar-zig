@@ -102,7 +102,7 @@ const CompiledProgram = struct {
     layers: []const CompiledLayer,
 };
 
-const BytecodeFormatVersion: u16 = 2;
+const BytecodeFormatVersion: u16 = 3;
 const BytecodeInstructionOpcode = enum(u8) {
     push_literal = 1,
     push_slot = 2,
@@ -1043,6 +1043,8 @@ test "Evaluator writes bytecode binary blob" {
 
     try std.testing.expect(blob.items.len > 8);
     try std.testing.expectEqualStrings("DSLB", blob.items[0..4]);
+    try std.testing.expectEqual(@as(u8, BytecodeFormatVersion), blob.items[4]);
+    try std.testing.expectEqual(@as(u8, 0), blob.items[5]);
 }
 
 test "Evaluator writes bytecode files for bundled v1 DSL examples" {

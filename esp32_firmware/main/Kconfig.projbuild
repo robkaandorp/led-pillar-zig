@@ -1,0 +1,31 @@
+menu "LED Pillar Firmware"
+
+config FW_OTA_ENABLED
+    bool "Enable wireless HTTPS OTA support"
+    default y
+
+config FW_OTA_DEFAULT_URL
+    string "Default OTA image URL"
+    depends on FW_OTA_ENABLED
+    default "https://example.com/led_pillar_firmware.bin"
+
+config FW_OTA_USE_CRT_BUNDLE
+    bool "Use ESP x509 certificate bundle for OTA by default"
+    depends on FW_OTA_ENABLED
+    default y
+
+config FW_OTA_ALLOW_INSECURE
+    bool "Allow OTA without full certificate verification"
+    depends on FW_OTA_ENABLED
+    default n
+    help
+        Intended only for development environments. This relaxes certificate
+        validation when no cert bundle or server cert is provided.
+
+config FW_OTA_HTTP_TIMEOUT_MS
+    int "OTA HTTP timeout (ms)"
+    depends on FW_OTA_ENABLED
+    range 1000 120000
+    default 10000
+
+endmenu

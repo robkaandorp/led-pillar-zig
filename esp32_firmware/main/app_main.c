@@ -1,0 +1,94 @@
+#include <string.h>
+#include <inttypes.h>
+
+#include "esp_err.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+
+#include "fw_led_config.h"
+#include "fw_tcp_server.h"
+#include "ota_hooks.h"
+
+static const char *TAG = "fw_main";
+static const char *FW_WIFI_SSID = "YOUR_WIFI_SSID";
+static const char *FW_WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+static fw_led_layout_config_t g_fw_layout = {0};
+
+static void fw_init_nvs(void) {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+}
+
+static void fw_init_network(void) {
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+}
+
+static void fw_init_wifi_sta(void) {
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    wifi_config_t wifi_config = {0};
+
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
+    strlcpy((char *)wifi_config.sta.ssid, FW_WIFI_SSID, sizeof(wifi_config.sta.ssid));
+    strlcpy((char *)wifi_config.sta.password, FW_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "WiFi station init complete (connection attempt is best-effort)");
+    (void)esp_wifi_connect();
+}
+
+static void fw_init_led_layout(void) {
+    fw_led_physical_index_t first_pixel = {0};
+
+    fw_led_layout_load_default(&g_fw_layout);
+    ESP_ERROR_CHECK(fw_led_layout_validate(&g_fw_layout));
+    ESP_ERROR_CHECK(fw_led_map_logical_xy(&g_fw_layout, 0, 0, &first_pixel));
+
+    ESP_LOGI(TAG,
+             "LED layout ready: %ux%u, segments=%u, total_leds=%" PRIu32 ", serpentine=%s",
+             g_fw_layout.width,
+             g_fw_layout.height,
+             g_fw_layout.segment_count,
+             fw_led_layout_total_leds(&g_fw_layout),
+             g_fw_layout.serpentine_columns ? "enabled" : "disabled");
+
+    uint8_t segment = 0;
+    while (segment < g_fw_layout.segment_count) {
+        ESP_LOGI(TAG,
+                 "segment[%u]: gpio=%d leds=%u",
+                 segment,
+                 g_fw_layout.segments[segment].gpio,
+                 g_fw_layout.segments[segment].led_count);
+        segment += 1;
+    }
+
+    ESP_LOGI(TAG,
+             "logical(0,0) -> segment=%u led=%u global=%" PRIu32,
+             first_pixel.segment_index,
+             first_pixel.segment_led_index,
+             first_pixel.global_led_index);
+}
+
+void app_main(void) {
+    ESP_LOGI(TAG, "Bootstrapping firmware scaffold");
+    fw_init_nvs();
+    fw_init_led_layout();
+    fw_init_network();
+    fw_init_wifi_sta();
+    ESP_ERROR_CHECK(fw_tcp_server_start(&g_fw_layout, FW_TCP_DEFAULT_PORT));
+    fw_ota_init();
+    ESP_LOGI(TAG, "Scaffold initialization complete");
+}
