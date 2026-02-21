@@ -3,7 +3,7 @@
 effect soap_bubbles_v1
 
 frame {
-  let two_pi = 6.2831853
+  let two_pi = PI * 2.0
   let depth_time = time * 0.75
   let tint_time = time * 0.8
 }

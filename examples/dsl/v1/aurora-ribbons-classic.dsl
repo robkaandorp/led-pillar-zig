@@ -11,7 +11,7 @@ frame {
 }
 
 layer ribbons {
-  let theta = (x / width) * 6.2831853
+  let theta = (x / width) * TAU
 
   for i in 0..4 {
     let layer_index = i

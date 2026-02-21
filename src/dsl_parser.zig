@@ -9,6 +9,9 @@ pub const ValueType = enum {
 pub const BuiltinId = enum {
     sin,
     cos,
+    sqrt,
+    ln,
+    log,
     abs,
     floor,
     fract,
@@ -114,6 +117,9 @@ const BuiltinSpec = struct {
 const builtin_specs = [_]BuiltinSpec{
     .{ .id = .sin, .name = "sin", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
     .{ .id = .cos, .name = "cos", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .sqrt, .name = "sqrt", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .ln, .name = "ln", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
+    .{ .id = .log, .name = "log", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
     .{ .id = .abs, .name = "abs", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
     .{ .id = .floor, .name = "floor", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
     .{ .id = .fract, .name = "fract", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
@@ -152,6 +158,11 @@ const input_names = [_][]const u8{
     "y",
     "width",
     "height",
+};
+
+const builtin_constant_names = [_][]const u8{
+    "PI",
+    "TAU",
 };
 
 const max_call_args: usize = 8;
@@ -755,6 +766,7 @@ fn inferIdentifierType(
     }
     if (param_types.get(name)) |typ| return typ;
     if (isInputName(name)) return .scalar;
+    if (isBuiltinConstantName(name)) return .scalar;
     return error.UnknownIdentifier;
 }
 
@@ -768,7 +780,7 @@ fn resolveBuiltinCall(builtin: BuiltinId, arg_types: []const ValueType) !ValueTy
 }
 
 fn isReservedIdentifier(name: []const u8) bool {
-    return isKeyword(name) or isBuiltinName(name) or isInputName(name);
+    return isKeyword(name) or isBuiltinName(name) or isInputName(name) or isBuiltinConstantName(name);
 }
 
 fn isKeyword(name: []const u8) bool {
@@ -803,6 +815,13 @@ fn isInputName(name: []const u8) bool {
     return false;
 }
 
+fn isBuiltinConstantName(name: []const u8) bool {
+    for (builtin_constant_names) |constant_name| {
+        if (std.mem.eql(u8, constant_name, name)) return true;
+    }
+    return false;
+}
+
 fn isIdentifierStart(ch: u8) bool {
     return std.ascii.isAlphabetic(ch) or ch == '_';
 }
@@ -816,9 +835,14 @@ test "parseAndValidate accepts valid v1 DSL" {
         \\effect aurora_v1
         \\param speed = 0.28
         \\param phase = sin(time * speed)
+        \\param radius = sqrt(9.0)
+        \\param natural = ln(2.7182817)
+        \\param decade = log(100.0)
+        \\param turn = TAU
         \\
         \\layer ribbon {
-        \\  let theta = (x / width) * 6.2831853
+        \\  let theta = (x / width) * TAU
+        \\  let half_turn = PI
         \\  let local = vec2(wrapdx(x, width * 0.5, width), y - (height * 0.5))
         \\  let d = circle(local, 3.0)
         \\  let a = (1.0 - smoothstep(0.0, 1.9, abs(d))) * max(hash01(frame), 0.2)
@@ -833,7 +857,7 @@ test "parseAndValidate accepts valid v1 DSL" {
 
     const program = try parseAndValidate(arena.allocator(), source);
     try std.testing.expectEqualStrings("aurora_v1", program.effect_name);
-    try std.testing.expectEqual(@as(usize, 2), program.params.len);
+    try std.testing.expectEqual(@as(usize, 6), program.params.len);
     try std.testing.expectEqual(@as(usize, 0), program.frame_statements.len);
     try std.testing.expectEqual(@as(usize, 1), program.layers.len);
     try std.testing.expect(program.has_emit);
@@ -1027,4 +1051,31 @@ test "parseAndValidate enforces blend expression type and known builtins" {
 
     try std.testing.expectError(error.InvalidBlendType, parseAndValidate(arena.allocator(), invalid_blend_type_source));
     try std.testing.expectError(error.UnknownBuiltin, parseAndValidate(arena.allocator(), unknown_builtin_source));
+}
+
+test "parseAndValidate recognizes and reserves builtin constants" {
+    const valid_source =
+        \\effect constants
+        \\param spin = TAU
+        \\layer l {
+        \\  let alpha = PI / spin
+        \\  blend rgba(1.0, 1.0, 1.0, alpha)
+        \\}
+        \\emit
+    ;
+
+    const reserved_source =
+        \\effect reserved_constant
+        \\param PI = 1.0
+        \\layer l {
+        \\  blend rgba(1.0, 1.0, 1.0, 1.0)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    _ = try parseAndValidate(arena.allocator(), valid_source);
+    try std.testing.expectError(error.ReservedIdentifier, parseAndValidate(arena.allocator(), reserved_source));
 }

@@ -337,10 +337,13 @@ pub const Evaluator = struct {
 fn compileProgram(allocator: std.mem.Allocator, program: dsl_parser.Program) !CompiledProgram {
     var param_lookup = std.StringHashMap(usize).init(allocator);
     defer param_lookup.deinit();
+    var builtin_constants = std.StringHashMap(f32).init(allocator);
+    defer builtin_constants.deinit();
+    try populateBuiltinConstants(&builtin_constants);
 
     const params = try allocator.alloc(CompiledParam, program.params.len);
     for (program.params, 0..) |param, idx| {
-        const compiled_expr = try compileExpr(allocator, param.value, &param_lookup, null, null, null);
+        const compiled_expr = try compileExpr(allocator, param.value, &param_lookup, null, null, &builtin_constants);
         params[idx] = .{
             .expr = compiled_expr,
             .depends_on_xy = compiledExprDependsOnXY(compiled_expr, params[0..idx]),
@@ -350,11 +353,11 @@ fn compileProgram(allocator: std.mem.Allocator, program: dsl_parser.Program) !Co
 
     var frame_lookup = std.StringHashMap(usize).init(allocator);
     defer frame_lookup.deinit();
-    const frame = try compileFrame(allocator, program.frame_statements, &param_lookup, &frame_lookup);
+    const frame = try compileFrame(allocator, program.frame_statements, &param_lookup, &frame_lookup, &builtin_constants);
 
     const layers = try allocator.alloc(CompiledLayer, program.layers.len);
     for (program.layers, 0..) |layer, idx| {
-        layers[idx] = try compileLayer(allocator, layer, &param_lookup, &frame_lookup);
+        layers[idx] = try compileLayer(allocator, layer, &param_lookup, &frame_lookup, &builtin_constants);
     }
 
     return .{
@@ -369,6 +372,7 @@ fn compileFrame(
     frame_statements: []const dsl_parser.Statement,
     param_lookup: *const std.StringHashMap(usize),
     frame_lookup: *std.StringHashMap(usize),
+    const_lookup: *const std.StringHashMap(f32),
 ) !CompiledFrame {
     var let_slot: usize = 0;
     const statements = try compileStatements(
@@ -377,7 +381,7 @@ fn compileFrame(
         param_lookup,
         null,
         frame_lookup,
-        null,
+        const_lookup,
         false,
         &let_slot,
     );
@@ -392,6 +396,7 @@ fn compileLayer(
     layer: dsl_parser.Layer,
     param_lookup: *const std.StringHashMap(usize),
     frame_lookup: *const std.StringHashMap(usize),
+    const_lookup: *const std.StringHashMap(f32),
 ) !CompiledLayer {
     var let_lookup = std.StringHashMap(usize).init(allocator);
     defer let_lookup.deinit();
@@ -402,7 +407,7 @@ fn compileLayer(
         param_lookup,
         frame_lookup,
         &let_lookup,
-        null,
+        const_lookup,
         true,
         &let_slot,
     );
@@ -636,6 +641,11 @@ fn cloneF32Map(allocator: std.mem.Allocator, source: ?*const std.StringHashMap(f
     return out;
 }
 
+fn populateBuiltinConstants(lookup: *std.StringHashMap(f32)) !void {
+    try lookup.put("PI", @as(f32, std.math.pi));
+    try lookup.put("TAU", @as(f32, 2.0 * std.math.pi));
+}
+
 fn inputSlotFromName(name: []const u8) ?InputSlot {
     if (std.mem.eql(u8, name, "time")) return .time;
     if (std.mem.eql(u8, name, "frame")) return .frame;
@@ -673,6 +683,9 @@ fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) Runtim
     return switch (builtin) {
         .sin => .{ .scalar = std.math.sin(asScalar(args[0])) },
         .cos => .{ .scalar = std.math.cos(asScalar(args[0])) },
+        .sqrt => .{ .scalar = @sqrt(asScalar(args[0])) },
+        .ln => .{ .scalar = @log(asScalar(args[0])) },
+        .log => .{ .scalar = std.math.log10(asScalar(args[0])) },
         .abs => .{ .scalar = @abs(asScalar(args[0])) },
         .floor => .{ .scalar = @floor(asScalar(args[0])) },
         .fract => blk: {
@@ -778,6 +791,11 @@ test "Evaluator evaluates v1 builtin expressions" {
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), try evalScalarExpression("sin(0.0)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), try evalScalarExpression("cos(0.0)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), try evalScalarExpression("PI / PI", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), try evalScalarExpression("TAU / (PI * 2.0)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), try evalScalarExpression("sqrt(0.25)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), try evalScalarExpression("ln(2.7182817)", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), try evalScalarExpression("log(100.0) * 0.25", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.25), try evalScalarExpression("abs(-0.25)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), try evalScalarExpression("floor(0.75)", inputs), 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.75), try evalScalarExpression("fract(2.75)", inputs), 0.0001);

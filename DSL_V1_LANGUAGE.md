@@ -54,37 +54,103 @@ call           = IDENT "(" [expr ("," expr)*] ")" ;
 - Comments: `//` to end of line
 - Whitespace/newlines are ignored between tokens
 
+## Params
+
+`param` creates a named scalar expression at top level:
+
+`param <name> = <expr>`
+
+How params are used in v1:
+- Params are shared scalar values that can be referenced from `frame` and `layer` blocks.
+- Params are useful for tuning values (`speed`, `radius`, `intensity`) in one place.
+- Param expressions can use builtin functions, builtin constants, and input identifiers (`time`, `frame`, `width`, `height`, and also `x`/`y`).
+- A param can reference earlier params, but not later params.
+- At runtime, params are evaluated before layer blending; params that depend on `x`/`y` are evaluated per pixel, others are evaluated once per frame.
+
+Example:
+
+```dsl
+effect pulse
+param speed = 0.7
+param phase = sin(time * speed)
+
+layer l {
+  let alpha = (phase * 0.5) + 0.5
+  blend rgba(1.0, 0.2, 0.2, alpha)
+}
+emit
+```
+
 ## Builtin functions and types
 
 Types:
-- `scalar`
-- `vec2`
-- `rgba`
+- `scalar`: floating-point number (`f32`)
+- `vec2`: 2D vector (`x`, `y`)
+- `rgba`: color (`r`, `g`, `b`, `a`)
 
 Builtins:
 
-| Builtin | Signature | Returns |
-|---|---|---|
-| `sin` | `sin(scalar)` | `scalar` |
-| `cos` | `cos(scalar)` | `scalar` |
-| `abs` | `abs(scalar)` | `scalar` |
-| `floor` | `floor(scalar)` | `scalar` |
-| `fract` | `fract(scalar)` | `scalar` |
-| `min` | `min(scalar, scalar)` | `scalar` |
-| `max` | `max(scalar, scalar)` | `scalar` |
-| `clamp` | `clamp(scalar, scalar, scalar)` | `scalar` |
-| `smoothstep` | `smoothstep(scalar, scalar, scalar)` | `scalar` |
-| `circle` | `circle(vec2, scalar)` | `scalar` |
-| `box` | `box(vec2, vec2)` | `scalar` |
-| `wrapdx` | `wrapdx(scalar, scalar, scalar)` | `scalar` |
-| `hash01` | `hash01(scalar)` | `scalar` |
-| `hashSigned` | `hashSigned(scalar)` | `scalar` |
-| `hashCoords01` | `hashCoords01(scalar, scalar, scalar)` | `scalar` |
-| `vec2` | `vec2(scalar, scalar)` | `vec2` |
-| `rgba` | `rgba(scalar, scalar, scalar, scalar)` | `rgba` |
+| Builtin | Signature | Returns | What it does |
+|---|---|---|---|
+| `sin` | `sin(scalar)` | `scalar` | Sine of angle/radian input. |
+| `cos` | `cos(scalar)` | `scalar` | Cosine of angle/radian input. |
+| `sqrt` | `sqrt(scalar)` | `scalar` | Square root. |
+| `ln` | `ln(scalar)` | `scalar` | Natural logarithm (base `e`). |
+| `log` | `log(scalar)` | `scalar` | Base-10 logarithm. |
+| `abs` | `abs(scalar)` | `scalar` | Absolute value. |
+| `floor` | `floor(scalar)` | `scalar` | Largest integer not greater than input. |
+| `fract` | `fract(scalar)` | `scalar` | Fractional part (`x - floor(x)`). |
+| `min` | `min(scalar, scalar)` | `scalar` | Smaller of two values. |
+| `max` | `max(scalar, scalar)` | `scalar` | Larger of two values. |
+| `clamp` | `clamp(scalar, scalar, scalar)` | `scalar` | Constrains value into `[min, max]`. |
+| `smoothstep` | `smoothstep(scalar, scalar, scalar)` | `scalar` | Smooth transition from 0 to 1 between edges. |
+| `circle` | `circle(vec2, scalar)` | `scalar` | Signed distance to a circle (negative inside). |
+| `box` | `box(vec2, vec2)` | `scalar` | Signed distance to an axis-aligned box (negative inside). |
+| `wrapdx` | `wrapdx(scalar, scalar, scalar)` | `scalar` | Shortest wrapped X-distance on pillar width. |
+| `hash01` | `hash01(scalar)` | `scalar` | Deterministic pseudo-random value in `[0, 1]` from one seed. |
+| `hashSigned` | `hashSigned(scalar)` | `scalar` | Deterministic pseudo-random value in `[-1, 1]` from one seed. |
+| `hashCoords01` | `hashCoords01(scalar, scalar, scalar)` | `scalar` | Deterministic pseudo-random value in `[0, 1]` from `x`, `y`, and seed. |
+| `vec2` | `vec2(scalar, scalar)` | `vec2` | Constructs a 2D vector. |
+| `rgba` | `rgba(scalar, scalar, scalar, scalar)` | `rgba` | Constructs an RGBA color. |
+
+Builtin constants:
+
+| Constant | Type | Value | What it does |
+|---|---|---|---|
+| `PI` | `scalar` | `3.1415927` | Circle half-turn constant. Useful for trig and angle math. |
+| `TAU` | `scalar` | `6.2831855` (`2 * PI`) | Full-turn constant. Useful for normalized 0..1 angle mapping. |
 
 Available input identifiers:
-- `time`, `frame`, `x`, `y`, `width`, `height`
+- `time`: elapsed seconds since effect start
+- `frame`: current frame number as scalar
+- `x`, `y`: current pixel coordinates
+- `width`, `height`: display dimensions
+
+## Quick examples
+
+1) **Pulse alpha with params + trig**
+
+```dsl
+param speed = 1.0
+param angle = (time * speed) * TAU
+param pulse = (sin(angle) * 0.5) + 0.5
+```
+
+2) **Normalize and clamp a horizontal gradient**
+
+```dsl
+let u = clamp(x / width, 0.0, 1.0)
+blend rgba(u, 0.0, 1.0 - u, 1.0)
+```
+
+3) **Simple circular mask around display center**
+
+```dsl
+let p = vec2(wrapdx(x, width * 0.5, width), y - (height * 0.5))
+let d = circle(p, 6.0)
+let a = 1.0 - smoothstep(0.0, 1.5, abs(d))
+blend rgba(0.2, 0.8, 1.0, a)
+```
 
 ## Semantics (v1 parser model)
 
@@ -114,6 +180,7 @@ The parser/validator rejects:
 - Reserved identifiers for `param`, `layer`, `let`, loop index names:
   - keywords (`effect`, `param`, `frame`, `layer`, `let`, `if`, `else`, `for`, `in`, `blend`, `emit`)
   - builtin names
+  - builtin constant names (`PI`, `TAU`)
   - input names (`time`, `frame`, `x`, `y`, `width`, `height`)
 - Unknown identifiers
 - Unknown builtin names
