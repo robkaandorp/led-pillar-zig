@@ -35,34 +35,32 @@ const ResolvedSlot = union(enum) {
     let_slot: usize,
 };
 
-const CompiledExpr = union(enum) {
-    literal: RuntimeValue,
-    slot: ResolvedSlot,
-    unary: UnaryExpr,
-    binary: BinaryExpr,
-    call: CallExpr,
+const BytecodeInstruction = union(enum) {
+    push_literal: RuntimeValue,
+    push_slot: ResolvedSlot,
+    negate,
+    add,
+    sub,
+    mul,
+    div,
+    call_builtin: BuiltinCall,
 
-    const UnaryExpr = struct {
-        op: dsl_parser.Expr.UnaryOp,
-        operand: *const CompiledExpr,
-    };
-
-    const BinaryExpr = struct {
-        op: dsl_parser.Expr.BinaryOp,
-        left: *const CompiledExpr,
-        right: *const CompiledExpr,
-    };
-
-    const CallExpr = struct {
+    const BuiltinCall = struct {
         builtin: dsl_parser.BuiltinId,
-        args: []const *const CompiledExpr,
+        arg_count: u8,
     };
+};
+
+const CompiledExpr = struct {
+    instructions: []const BytecodeInstruction,
+    max_stack_depth: usize,
 };
 
 const CompiledStatement = union(enum) {
     let_decl: LetDecl,
     blend: *const CompiledExpr,
     if_stmt: IfStmt,
+    for_stmt: ForStmt,
 
     const LetDecl = struct {
         slot: usize,
@@ -73,6 +71,13 @@ const CompiledStatement = union(enum) {
         condition: *const CompiledExpr,
         then_statements: []const CompiledStatement,
         else_statements: []const CompiledStatement,
+    };
+
+    const ForStmt = struct {
+        index_slot: usize,
+        start_inclusive: usize,
+        end_exclusive: usize,
+        statements: []const CompiledStatement,
     };
 };
 
@@ -97,7 +102,37 @@ const CompiledProgram = struct {
     layers: []const CompiledLayer,
 };
 
-const max_builtin_args: usize = 8;
+const BytecodeFormatVersion: u16 = 2;
+const BytecodeInstructionOpcode = enum(u8) {
+    push_literal = 1,
+    push_slot = 2,
+    negate = 3,
+    add = 4,
+    sub = 5,
+    mul = 6,
+    div = 7,
+    call_builtin = 8,
+};
+
+const BytecodeRuntimeValueTag = enum(u8) {
+    scalar = 1,
+    vec2 = 2,
+    rgba = 3,
+};
+
+const BytecodeSlotTag = enum(u8) {
+    input = 1,
+    param = 2,
+    frame_let = 3,
+    let_slot = 4,
+};
+
+const BytecodeStatementOpcode = enum(u8) {
+    let_decl = 1,
+    blend = 2,
+    if_stmt = 3,
+    for_stmt = 4,
+};
 
 pub const Evaluator = struct {
     allocator: std.mem.Allocator,
@@ -106,6 +141,7 @@ pub const Evaluator = struct {
     param_values: []f32,
     frame_values: []RuntimeValue,
     let_values: []RuntimeValue,
+    expr_stack: []RuntimeValue,
     has_dynamic_params: bool,
 
     pub fn init(allocator: std.mem.Allocator, program: dsl_parser.Program) !Evaluator {
@@ -120,13 +156,15 @@ pub const Evaluator = struct {
         const frame_values = try allocator.alloc(RuntimeValue, compiled.frame.let_count);
         errdefer allocator.free(frame_values);
 
-        var max_let_count: usize = 0;
+        var max_let_count: usize = compiled.frame.let_count;
         for (compiled.layers) |layer| {
             max_let_count = @max(max_let_count, layer.let_count);
         }
 
         const let_values = try allocator.alloc(RuntimeValue, max_let_count);
         errdefer allocator.free(let_values);
+        const expr_stack = try allocator.alloc(RuntimeValue, requiredExprStackSize(compiled));
+        errdefer allocator.free(expr_stack);
 
         var has_dynamic_params = false;
         for (compiled.params) |param| {
@@ -140,6 +178,7 @@ pub const Evaluator = struct {
             .param_values = param_values,
             .frame_values = frame_values,
             .let_values = let_values,
+            .expr_stack = expr_stack,
             .has_dynamic_params = has_dynamic_params,
         };
     }
@@ -148,7 +187,15 @@ pub const Evaluator = struct {
         self.allocator.free(self.param_values);
         self.allocator.free(self.frame_values);
         self.allocator.free(self.let_values);
+        self.allocator.free(self.expr_stack);
         self.compile_arena.deinit();
+    }
+
+    pub fn writeBytecodeBinary(self: *const Evaluator, writer: anytype) !void {
+        try writer.writeAll("DSLB");
+        try writeU16(writer, BytecodeFormatVersion);
+        try writeU16(writer, 0);
+        try serializeCompiledProgram(writer, self.compiled);
     }
 
     pub fn evaluatePixel(self: *Evaluator, inputs: PixelInputs) !sdf_common.ColorRgba {
@@ -190,6 +237,7 @@ pub const Evaluator = struct {
                     const value = self.evalExpr(let_decl.expr, inputs);
                     if (frame_mode) {
                         self.frame_values[let_decl.slot] = value;
+                        self.let_values[let_decl.slot] = value;
                     } else {
                         self.let_values[let_decl.slot] = value;
                     }
@@ -205,6 +253,19 @@ pub const Evaluator = struct {
                         self.executeStatements(if_stmt.then_statements, inputs, frame_mode, out);
                     } else {
                         self.executeStatements(if_stmt.else_statements, inputs, frame_mode, out);
+                    }
+                },
+                .for_stmt => |for_stmt| {
+                    var i = for_stmt.start_inclusive;
+                    while (i < for_stmt.end_exclusive) : (i += 1) {
+                        const index_value = RuntimeValue{ .scalar = @as(f32, @floatFromInt(i)) };
+                        if (frame_mode) {
+                            self.frame_values[for_stmt.index_slot] = index_value;
+                            self.let_values[for_stmt.index_slot] = index_value;
+                        } else {
+                            self.let_values[for_stmt.index_slot] = index_value;
+                        }
+                        self.executeStatements(for_stmt.statements, inputs, frame_mode, out);
                     }
                 },
             }
@@ -287,34 +348,56 @@ pub const Evaluator = struct {
         }
     }
 
-    fn evalExpr(self: *const Evaluator, expr: *const CompiledExpr, inputs: PixelInputs) RuntimeValue {
-        return switch (expr.*) {
-            .literal => |literal| literal,
-            .slot => |slot| self.loadSlot(slot, inputs),
-            .unary => |unary_expr| blk: {
-                const operand = asScalar(self.evalExpr(unary_expr.operand, inputs));
-                break :blk switch (unary_expr.op) {
-                    .negate => .{ .scalar = -operand },
-                };
-            },
-            .binary => |binary_expr| blk: {
-                const lhs = asScalar(self.evalExpr(binary_expr.left, inputs));
-                const rhs = asScalar(self.evalExpr(binary_expr.right, inputs));
-                break :blk switch (binary_expr.op) {
-                    .add => .{ .scalar = lhs + rhs },
-                    .sub => .{ .scalar = lhs - rhs },
-                    .mul => .{ .scalar = lhs * rhs },
-                    .div => .{ .scalar = lhs / rhs },
-                };
-            },
-            .call => |call_expr| blk: {
-                var arg_values: [max_builtin_args]RuntimeValue = undefined;
-                for (call_expr.args, 0..) |arg, idx| {
-                    arg_values[idx] = self.evalExpr(arg, inputs);
-                }
-                break :blk evalBuiltin(call_expr.builtin, arg_values[0..call_expr.args.len]);
-            },
-        };
+    fn evalExpr(self: *Evaluator, expr: *const CompiledExpr, inputs: PixelInputs) RuntimeValue {
+        var stack_len: usize = 0;
+        for (expr.instructions) |instruction| {
+            switch (instruction) {
+                .push_literal => |literal| {
+                    self.expr_stack[stack_len] = literal;
+                    stack_len += 1;
+                },
+                .push_slot => |slot| {
+                    self.expr_stack[stack_len] = self.loadSlot(slot, inputs);
+                    stack_len += 1;
+                },
+                .negate => {
+                    self.expr_stack[stack_len - 1] = .{ .scalar = -asScalar(self.expr_stack[stack_len - 1]) };
+                },
+                .add => {
+                    const rhs = asScalar(self.expr_stack[stack_len - 1]);
+                    const lhs = asScalar(self.expr_stack[stack_len - 2]);
+                    stack_len -= 1;
+                    self.expr_stack[stack_len - 1] = .{ .scalar = lhs + rhs };
+                },
+                .sub => {
+                    const rhs = asScalar(self.expr_stack[stack_len - 1]);
+                    const lhs = asScalar(self.expr_stack[stack_len - 2]);
+                    stack_len -= 1;
+                    self.expr_stack[stack_len - 1] = .{ .scalar = lhs - rhs };
+                },
+                .mul => {
+                    const rhs = asScalar(self.expr_stack[stack_len - 1]);
+                    const lhs = asScalar(self.expr_stack[stack_len - 2]);
+                    stack_len -= 1;
+                    self.expr_stack[stack_len - 1] = .{ .scalar = lhs * rhs };
+                },
+                .div => {
+                    const rhs = asScalar(self.expr_stack[stack_len - 1]);
+                    const lhs = asScalar(self.expr_stack[stack_len - 2]);
+                    stack_len -= 1;
+                    self.expr_stack[stack_len - 1] = .{ .scalar = lhs / rhs };
+                },
+                .call_builtin => |call| {
+                    const arg_count = @as(usize, call.arg_count);
+                    const arg_start = stack_len - arg_count;
+                    const value = evalBuiltin(call.builtin, self.expr_stack[arg_start..stack_len]);
+                    stack_len = arg_start;
+                    self.expr_stack[stack_len] = value;
+                    stack_len += 1;
+                },
+            }
+        }
+        return self.expr_stack[0];
     }
 
     fn loadSlot(self: *const Evaluator, slot: ResolvedSlot, inputs: PixelInputs) RuntimeValue {
@@ -489,31 +572,28 @@ fn compileStatements(
                 });
             },
             .for_range => |for_stmt| {
-                const base_slot = let_slot.*;
-                var max_slot = let_slot.*;
-                var i = for_stmt.start_inclusive;
-                while (i < for_stmt.end_exclusive) : (i += 1) {
-                    var iter_consts = try cloneF32Map(allocator, const_lookup);
-                    defer iter_consts.deinit();
-                    try iter_consts.put(for_stmt.index_name, @as(f32, @floatFromInt(i)));
-
-                    var iter_lookup = try cloneUsizeMap(allocator, let_lookup);
-                    defer iter_lookup.deinit();
-                    var iter_slot = base_slot;
-                    const iter_statements = try compileStatements(
-                        allocator,
-                        for_stmt.statements,
-                        param_lookup,
-                        frame_lookup,
-                        &iter_lookup,
-                        &iter_consts,
-                        allow_blend,
-                        &iter_slot,
-                    );
-                    try compiled.appendSlice(allocator, iter_statements);
-                    max_slot = @max(max_slot, iter_slot);
-                }
-                let_slot.* = max_slot;
+                const index_slot = let_slot.*;
+                var iter_lookup = try cloneUsizeMap(allocator, let_lookup);
+                defer iter_lookup.deinit();
+                try iter_lookup.put(for_stmt.index_name, index_slot);
+                var body_slot = index_slot + 1;
+                const iter_statements = try compileStatements(
+                    allocator,
+                    for_stmt.statements,
+                    param_lookup,
+                    frame_lookup,
+                    &iter_lookup,
+                    const_lookup,
+                    allow_blend,
+                    &body_slot,
+                );
+                let_slot.* = @max(let_slot.*, body_slot);
+                try compiled.append(allocator, .{ .for_stmt = .{
+                    .index_slot = index_slot,
+                    .start_inclusive = for_stmt.start_inclusive,
+                    .end_exclusive = for_stmt.end_exclusive,
+                    .statements = iter_statements,
+                } });
             },
         }
     }
@@ -529,79 +609,85 @@ fn compileExpr(
     let_lookup: ?*const std.StringHashMap(usize),
     const_lookup: ?*const std.StringHashMap(f32),
 ) !*const CompiledExpr {
-    return switch (expr.*) {
-        .number => |number| makeExpr(allocator, .{ .literal = .{ .scalar = number } }),
-        .identifier => |name| blk: {
-            if (const_lookup) |lookup| {
-                if (lookup.get(name)) |value| break :blk makeExpr(allocator, .{ .literal = .{ .scalar = value } });
-            }
-            const slot = try resolveSlot(name, param_lookup, frame_lookup, let_lookup);
-            break :blk makeExpr(allocator, .{ .slot = slot });
-        },
-        .unary => |unary_expr| blk: {
-            const operand = try compileExpr(allocator, unary_expr.operand, param_lookup, frame_lookup, let_lookup, const_lookup);
-            if (operand.* == .literal) {
-                const folded = switch (unary_expr.op) {
-                    .negate => RuntimeValue{ .scalar = -asScalar(operand.literal) },
-                };
-                break :blk makeExpr(allocator, .{ .literal = folded });
-            }
-            break :blk makeExpr(allocator, .{ .unary = .{
-                .op = unary_expr.op,
-                .operand = operand,
-            } });
-        },
-        .binary => |binary_expr| blk: {
-            const left = try compileExpr(allocator, binary_expr.left, param_lookup, frame_lookup, let_lookup, const_lookup);
-            const right = try compileExpr(allocator, binary_expr.right, param_lookup, frame_lookup, let_lookup, const_lookup);
+    var instructions = std.ArrayList(BytecodeInstruction).empty;
+    try emitExprBytecode(&instructions, allocator, expr, param_lookup, frame_lookup, let_lookup, const_lookup);
 
-            if (left.* == .literal and right.* == .literal) {
-                const lhs = asScalar(left.literal);
-                const rhs = asScalar(right.literal);
-                const folded = switch (binary_expr.op) {
-                    .add => lhs + rhs,
-                    .sub => lhs - rhs,
-                    .mul => lhs * rhs,
-                    .div => lhs / rhs,
-                };
-                break :blk makeExpr(allocator, .{ .literal = .{ .scalar = folded } });
-            }
-
-            break :blk makeExpr(allocator, .{ .binary = .{
-                .op = binary_expr.op,
-                .left = left,
-                .right = right,
-            } });
-        },
-        .call => |call_expr| blk: {
-            const compiled_args = try allocator.alloc(*const CompiledExpr, call_expr.args.len);
-            var all_literal = true;
-            for (call_expr.args, 0..) |arg, idx| {
-                compiled_args[idx] = try compileExpr(allocator, arg, param_lookup, frame_lookup, let_lookup, const_lookup);
-                all_literal = all_literal and (compiled_args[idx].* == .literal);
-            }
-
-            if (all_literal) {
-                var literal_args: [max_builtin_args]RuntimeValue = undefined;
-                for (compiled_args, 0..) |arg, idx| {
-                    literal_args[idx] = arg.literal;
-                }
-                const folded = evalBuiltin(call_expr.builtin, literal_args[0..compiled_args.len]);
-                break :blk makeExpr(allocator, .{ .literal = folded });
-            }
-
-            break :blk makeExpr(allocator, .{ .call = .{
-                .builtin = call_expr.builtin,
-                .args = compiled_args,
-            } });
-        },
+    const owned = try instructions.toOwnedSlice(allocator);
+    const ptr = try allocator.create(CompiledExpr);
+    ptr.* = .{
+        .instructions = owned,
+        .max_stack_depth = computeExprMaxStackDepth(owned),
     };
+    return ptr;
 }
 
-fn makeExpr(allocator: std.mem.Allocator, expr: CompiledExpr) !*const CompiledExpr {
-    const ptr = try allocator.create(CompiledExpr);
-    ptr.* = expr;
-    return ptr;
+fn emitExprBytecode(
+    instructions: *std.ArrayList(BytecodeInstruction),
+    allocator: std.mem.Allocator,
+    expr: *const dsl_parser.Expr,
+    param_lookup: *const std.StringHashMap(usize),
+    frame_lookup: ?*const std.StringHashMap(usize),
+    let_lookup: ?*const std.StringHashMap(usize),
+    const_lookup: ?*const std.StringHashMap(f32),
+) !void {
+    switch (expr.*) {
+        .number => |number| {
+            try instructions.append(allocator, .{ .push_literal = .{ .scalar = number } });
+        },
+        .identifier => |name| {
+            if (const_lookup) |lookup| {
+                if (lookup.get(name)) |value| {
+                    try instructions.append(allocator, .{ .push_literal = .{ .scalar = value } });
+                    return;
+                }
+            }
+            const slot = try resolveSlot(name, param_lookup, frame_lookup, let_lookup);
+            try instructions.append(allocator, .{ .push_slot = slot });
+        },
+        .unary => |unary_expr| {
+            try emitExprBytecode(instructions, allocator, unary_expr.operand, param_lookup, frame_lookup, let_lookup, const_lookup);
+            switch (unary_expr.op) {
+                .negate => try instructions.append(allocator, .negate),
+            }
+        },
+        .binary => |binary_expr| {
+            try emitExprBytecode(instructions, allocator, binary_expr.left, param_lookup, frame_lookup, let_lookup, const_lookup);
+            try emitExprBytecode(instructions, allocator, binary_expr.right, param_lookup, frame_lookup, let_lookup, const_lookup);
+            const op: BytecodeInstruction = switch (binary_expr.op) {
+                .add => .add,
+                .sub => .sub,
+                .mul => .mul,
+                .div => .div,
+            };
+            try instructions.append(allocator, op);
+        },
+        .call => |call_expr| {
+            for (call_expr.args) |arg| {
+                try emitExprBytecode(instructions, allocator, arg, param_lookup, frame_lookup, let_lookup, const_lookup);
+            }
+            try instructions.append(allocator, .{ .call_builtin = .{
+                .builtin = call_expr.builtin,
+                .arg_count = @as(u8, @intCast(call_expr.args.len)),
+            } });
+        },
+    }
+}
+
+fn computeExprMaxStackDepth(instructions: []const BytecodeInstruction) usize {
+    var depth: usize = 0;
+    var max_depth: usize = 1;
+    for (instructions) |instruction| {
+        switch (instruction) {
+            .push_literal, .push_slot => depth += 1,
+            .negate => {},
+            .add, .sub, .mul, .div => depth -= 1,
+            .call_builtin => |call| {
+                depth = depth - @as(usize, call.arg_count) + 1;
+            },
+        }
+        max_depth = @max(max_depth, depth);
+    }
+    return max_depth;
 }
 
 fn resolveSlot(
@@ -630,17 +716,6 @@ fn cloneUsizeMap(allocator: std.mem.Allocator, source: *const std.StringHashMap(
     return out;
 }
 
-fn cloneF32Map(allocator: std.mem.Allocator, source: ?*const std.StringHashMap(f32)) !std.StringHashMap(f32) {
-    var out = std.StringHashMap(f32).init(allocator);
-    if (source) |src| {
-        var it = src.iterator();
-        while (it.next()) |entry| {
-            try out.put(entry.key_ptr.*, entry.value_ptr.*);
-        }
-    }
-    return out;
-}
-
 fn populateBuiltinConstants(lookup: *std.StringHashMap(f32)) !void {
     try lookup.put("PI", @as(f32, std.math.pi));
     try lookup.put("TAU", @as(f32, 2.0 * std.math.pi));
@@ -657,26 +732,190 @@ fn inputSlotFromName(name: []const u8) ?InputSlot {
 }
 
 fn compiledExprDependsOnXY(expr: *const CompiledExpr, prior_params: []const CompiledParam) bool {
-    return switch (expr.*) {
-        .literal => false,
-        .slot => |slot| switch (slot) {
-            .param => |idx| prior_params[idx].depends_on_xy,
-            .frame_let => false,
-            .let_slot => false,
-            .input => |input| input == .x or input == .y,
+    for (expr.instructions) |instruction| {
+        switch (instruction) {
+            .push_slot => |slot| switch (slot) {
+                .param => |idx| if (prior_params[idx].depends_on_xy) return true,
+                .input => |input| if (input == .x or input == .y) return true,
+                else => {},
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn requiredExprStackSize(compiled: CompiledProgram) usize {
+    var max_stack: usize = 1;
+    for (compiled.params) |param| {
+        max_stack = @max(max_stack, param.expr.max_stack_depth);
+    }
+    max_stack = @max(max_stack, maxExprStackInStatements(compiled.frame.statements));
+    for (compiled.layers) |layer| {
+        max_stack = @max(max_stack, maxExprStackInStatements(layer.statements));
+    }
+    return max_stack;
+}
+
+fn maxExprStackInStatements(statements: []const CompiledStatement) usize {
+    var max_stack: usize = 1;
+    for (statements) |statement| {
+        switch (statement) {
+            .let_decl => |let_decl| {
+                max_stack = @max(max_stack, let_decl.expr.max_stack_depth);
+            },
+            .blend => |blend_expr| {
+                max_stack = @max(max_stack, blend_expr.max_stack_depth);
+            },
+            .if_stmt => |if_stmt| {
+                max_stack = @max(max_stack, if_stmt.condition.max_stack_depth);
+                max_stack = @max(max_stack, maxExprStackInStatements(if_stmt.then_statements));
+                max_stack = @max(max_stack, maxExprStackInStatements(if_stmt.else_statements));
+            },
+            .for_stmt => |for_stmt| {
+                max_stack = @max(max_stack, maxExprStackInStatements(for_stmt.statements));
+            },
+        }
+    }
+    return max_stack;
+}
+
+fn serializeCompiledProgram(writer: anytype, compiled: CompiledProgram) !void {
+    try writeU32(writer, try asU32(compiled.params.len));
+    for (compiled.params) |param| {
+        try writeU8(writer, if (param.depends_on_xy) 1 else 0);
+        try serializeCompiledExpr(writer, param.expr);
+    }
+
+    try serializeCompiledStatements(writer, compiled.frame.statements);
+    try writeU32(writer, try asU32(compiled.layers.len));
+    for (compiled.layers) |layer| {
+        try serializeCompiledStatements(writer, layer.statements);
+    }
+}
+
+fn serializeCompiledStatements(writer: anytype, statements: []const CompiledStatement) !void {
+    try writeU32(writer, try asU32(statements.len));
+    for (statements) |statement| {
+        switch (statement) {
+            .let_decl => |let_decl| {
+                try writeU8(writer, @intFromEnum(BytecodeStatementOpcode.let_decl));
+                try writeU32(writer, try asU32(let_decl.slot));
+                try serializeCompiledExpr(writer, let_decl.expr);
+            },
+            .blend => |blend_expr| {
+                try writeU8(writer, @intFromEnum(BytecodeStatementOpcode.blend));
+                try serializeCompiledExpr(writer, blend_expr);
+            },
+            .if_stmt => |if_stmt| {
+                try writeU8(writer, @intFromEnum(BytecodeStatementOpcode.if_stmt));
+                try serializeCompiledExpr(writer, if_stmt.condition);
+                try serializeCompiledStatements(writer, if_stmt.then_statements);
+                try serializeCompiledStatements(writer, if_stmt.else_statements);
+            },
+            .for_stmt => |for_stmt| {
+                try writeU8(writer, @intFromEnum(BytecodeStatementOpcode.for_stmt));
+                try writeU32(writer, try asU32(for_stmt.index_slot));
+                try writeU32(writer, try asU32(for_stmt.start_inclusive));
+                try writeU32(writer, try asU32(for_stmt.end_exclusive));
+                try serializeCompiledStatements(writer, for_stmt.statements);
+            },
+        }
+    }
+}
+
+fn serializeCompiledExpr(writer: anytype, expr: *const CompiledExpr) !void {
+    try writeU32(writer, try asU32(expr.max_stack_depth));
+    try writeU32(writer, try asU32(expr.instructions.len));
+    for (expr.instructions) |instruction| {
+        switch (instruction) {
+            .push_literal => |literal| {
+                try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.push_literal));
+                try serializeRuntimeValue(writer, literal);
+            },
+            .push_slot => |slot| {
+                try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.push_slot));
+                try serializeResolvedSlot(writer, slot);
+            },
+            .negate => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.negate)),
+            .add => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.add)),
+            .sub => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.sub)),
+            .mul => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.mul)),
+            .div => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.div)),
+            .call_builtin => |call| {
+                try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.call_builtin));
+                try writeU8(writer, @as(u8, @intCast(@intFromEnum(call.builtin))));
+                try writeU8(writer, call.arg_count);
+            },
+        }
+    }
+}
+
+fn serializeRuntimeValue(writer: anytype, value: RuntimeValue) !void {
+    switch (value) {
+        .scalar => |scalar| {
+            try writeU8(writer, @intFromEnum(BytecodeRuntimeValueTag.scalar));
+            try writeF32(writer, scalar);
         },
-        .unary => |unary_expr| compiledExprDependsOnXY(unary_expr.operand, prior_params),
-        .binary => |binary_expr| {
-            return compiledExprDependsOnXY(binary_expr.left, prior_params) or
-                compiledExprDependsOnXY(binary_expr.right, prior_params);
+        .vec2 => |vec| {
+            try writeU8(writer, @intFromEnum(BytecodeRuntimeValueTag.vec2));
+            try writeF32(writer, vec.x);
+            try writeF32(writer, vec.y);
         },
-        .call => |call_expr| {
-            for (call_expr.args) |arg| {
-                if (compiledExprDependsOnXY(arg, prior_params)) return true;
-            }
-            return false;
+        .rgba => |rgba| {
+            try writeU8(writer, @intFromEnum(BytecodeRuntimeValueTag.rgba));
+            try writeF32(writer, rgba.r);
+            try writeF32(writer, rgba.g);
+            try writeF32(writer, rgba.b);
+            try writeF32(writer, rgba.a);
         },
-    };
+    }
+}
+
+fn serializeResolvedSlot(writer: anytype, slot: ResolvedSlot) !void {
+    switch (slot) {
+        .input => |input| {
+            try writeU8(writer, @intFromEnum(BytecodeSlotTag.input));
+            try writeU8(writer, @as(u8, @intCast(@intFromEnum(input))));
+        },
+        .param => |idx| {
+            try writeU8(writer, @intFromEnum(BytecodeSlotTag.param));
+            try writeU32(writer, try asU32(idx));
+        },
+        .frame_let => |idx| {
+            try writeU8(writer, @intFromEnum(BytecodeSlotTag.frame_let));
+            try writeU32(writer, try asU32(idx));
+        },
+        .let_slot => |idx| {
+            try writeU8(writer, @intFromEnum(BytecodeSlotTag.let_slot));
+            try writeU32(writer, try asU32(idx));
+        },
+    }
+}
+
+fn asU32(value: usize) !u32 {
+    return std.math.cast(u32, value) orelse error.BytecodeValueOutOfRange;
+}
+
+fn writeU8(writer: anytype, value: u8) !void {
+    var buf = [1]u8{value};
+    try writer.writeAll(&buf);
+}
+
+fn writeU16(writer: anytype, value: u16) !void {
+    var buf: [2]u8 = undefined;
+    std.mem.writeInt(u16, &buf, value, .little);
+    try writer.writeAll(&buf);
+}
+
+fn writeU32(writer: anytype, value: u32) !void {
+    var buf: [4]u8 = undefined;
+    std.mem.writeInt(u32, &buf, value, .little);
+    try writer.writeAll(&buf);
+}
+
+fn writeF32(writer: anytype, value: f32) !void {
+    try writeU32(writer, @bitCast(value));
 }
 
 fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) RuntimeValue {
@@ -777,6 +1016,101 @@ fn evalScalarExpression(expression: []const u8, inputs: PixelInputs) !f32 {
     defer evaluator.deinit();
     const color = try evaluator.evaluatePixel(inputs);
     return color.r;
+}
+
+test "Evaluator writes bytecode binary blob" {
+    const source =
+        \\effect bytecode_blob
+        \\param speed = 0.5
+        \\layer l {
+        \\  let alpha = (sin(time * TAU * speed) * 0.5) + 0.5
+        \\  blend rgba(alpha, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = try dsl_parser.parseAndValidate(arena.allocator(), source);
+    var evaluator = try Evaluator.init(std.testing.allocator, program);
+    defer evaluator.deinit();
+
+    var blob = std.ArrayList(u8).empty;
+    defer blob.deinit(std.testing.allocator);
+    const blob_writer = blob.writer(std.testing.allocator);
+    try evaluator.writeBytecodeBinary(blob_writer);
+
+    try std.testing.expect(blob.items.len > 8);
+    try std.testing.expectEqualStrings("DSLB", blob.items[0..4]);
+}
+
+test "Evaluator writes bytecode files for bundled v1 DSL examples" {
+    const examples_dir_path = "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1";
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.fs.cwd().makePath("bytecode");
+
+    var examples_dir = try std.fs.cwd().openDir(examples_dir_path, .{ .iterate = true });
+    defer examples_dir.close();
+
+    var it = examples_dir.iterate();
+    var compiled_count: usize = 0;
+    while (try it.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".dsl")) continue;
+
+        const source_path = try std.fs.path.join(allocator, &[_][]const u8{ examples_dir_path, entry.name });
+        const source = try std.fs.cwd().readFileAlloc(allocator, source_path, std.math.maxInt(usize));
+        const program = try dsl_parser.parseAndValidate(allocator, source);
+        var evaluator = try Evaluator.init(std.testing.allocator, program);
+        defer evaluator.deinit();
+
+        const stem = std.fs.path.stem(entry.name);
+        const output_name = try std.fmt.allocPrint(allocator, "{s}.bin", .{stem});
+        const output_path = try std.fs.path.join(allocator, &[_][]const u8{ "bytecode", output_name });
+
+        var file = try std.fs.cwd().createFile(output_path, .{ .truncate = true });
+        defer file.close();
+        var file_buffer: [16 * 1024]u8 = undefined;
+        var file_writer = file.writer(&file_buffer);
+        const writer = &file_writer.interface;
+        try evaluator.writeBytecodeBinary(writer);
+        try writer.flush();
+        compiled_count += 1;
+    }
+
+    try std.testing.expect(compiled_count > 0);
+}
+
+test "bytecode preserves for loops without unrolling" {
+    const source =
+        \\effect compact_loops
+        \\layer l {
+        \\  for i in 0..128 {
+        \\    let alpha = fract(i * 0.125)
+        \\    blend rgba(alpha, 0.0, 0.0, 0.02)
+        \\  }
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = try dsl_parser.parseAndValidate(arena.allocator(), source);
+    var evaluator = try Evaluator.init(std.testing.allocator, program);
+    defer evaluator.deinit();
+
+    var blob = std.ArrayList(u8).empty;
+    defer blob.deinit(std.testing.allocator);
+    const blob_writer = blob.writer(std.testing.allocator);
+    try evaluator.writeBytecodeBinary(blob_writer);
+
+    try std.testing.expect(blob.items.len < 4096);
 }
 
 test "Evaluator evaluates v1 builtin expressions" {

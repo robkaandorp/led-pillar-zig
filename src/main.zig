@@ -147,6 +147,7 @@ fn runDslFileEffect(
     const program = try led.dsl_parser.parseAndValidate(arena.allocator(), source);
     var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
     defer evaluator.deinit();
+    try writeDslBytecodeReference(&evaluator, dsl_file_path);
 
     const pixel_count = @as(usize, @intCast(display.pixel_count));
     const frame = try std.heap.page_allocator.alloc(led.effects.Color, pixel_count);
@@ -170,6 +171,26 @@ fn runDslFileEffect(
         frame_number +%= 1;
         next_send_ns += frame_period_ns_i128;
     }
+}
+
+fn writeDslBytecodeReference(evaluator: *const led.dsl_runtime.Evaluator, dsl_file_path: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+    const script_basename = std.fs.path.basename(dsl_file_path);
+    const stem = std.fs.path.stem(script_basename);
+    const bin_name = try std.fmt.allocPrint(allocator, "{s}.bin", .{stem});
+    defer allocator.free(bin_name);
+    const output_path = try std.fs.path.join(allocator, &[_][]const u8{ "bytecode", bin_name });
+    defer allocator.free(output_path);
+
+    try std.fs.cwd().makePath("bytecode");
+    var file = try std.fs.cwd().createFile(output_path, .{ .truncate = true });
+    defer file.close();
+
+    var file_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = file.writer(&file_buffer);
+    const writer = &file_writer.interface;
+    try evaluator.writeBytecodeBinary(writer);
+    try writer.flush();
 }
 
 fn blitDslFrameToDisplay(display: *led.DisplayBuffer, frame: []const led.effects.Color) !void {

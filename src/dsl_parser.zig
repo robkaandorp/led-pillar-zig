@@ -893,11 +893,11 @@ test "parseAndValidate accepts frame, for, and if blocks" {
 
 test "parseAndValidate accepts bundled v1 DSL examples" {
     const example_paths = [_][]const u8{
-        "examples\\dsl\\v1\\aurora.dsl",
-        "examples\\dsl\\v1\\aurora-ribbons-classic.dsl",
-        "examples\\dsl\\v1\\campfire.dsl",
-        "examples\\dsl\\v1\\soap-bubbles.dsl",
-        "examples\\dsl\\v1\\rain-ripple.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "aurora.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "aurora-ribbons-classic.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "campfire.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "soap-bubbles.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "rain-ripple.dsl",
     };
 
     for (example_paths) |example_path| {

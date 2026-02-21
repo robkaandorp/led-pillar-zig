@@ -163,7 +163,22 @@ blend rgba(0.2, 0.8, 1.0, a)
 - Arithmetic operators (`+`, `-`, `*`, `/`) are scalar-only.
 - Unary `-` is scalar-only.
 - Function calls must match known builtin name, arity, and argument types exactly.
-- `for` loops are compile-time expanded by the runtime compiler.
+- `for` loops are compiled as loop statements and executed at runtime (not unrolled into per-iteration copies).
+
+## Runtime bytecode model (host, current)
+
+The Zig runtime now compiles DSL expressions to a stack-based bytecode form before evaluation.
+
+- Expression instructions currently cover:
+  - literal/slot loads (`param`, `frame let`, `layer let`, input slots)
+  - scalar arithmetic ops (`negate`, `add`, `sub`, `mul`, `div`)
+  - builtin calls (`sin`, `cos`, `sqrt`, `ln`, `log`, SDF/hash/color/vector builtins)
+- Statements (`let`, `if`, `for`, `blend`) are still represented structurally, but each embedded expression is bytecode.
+- This is the first step toward offloading shader execution to ESP32.
+
+Transport note:
+- The current ESPHome `tcp_led_stream` component in `esphome_devices` accepts full pixel-frame payloads (`LEDS` header + RGB/RGBW bytes, protocol v1/v2).
+- Bytecode upload/execution on device will require an additional protocol layer on top of (or alongside) the current frame stream transport.
 
 ## Validation rules
 
@@ -194,6 +209,10 @@ The parser/validator rejects:
 Run a DSL effect file directly:
 
 `zig build run -- <host> [port] [frame_rate_hz] dsl-file <path-to-effect.dsl>`
+
+When running in `dsl-file` mode, the runtime writes the compiled reference bytecode to:
+
+`bytecode/<dsl-script-name>.bin`
 
 Examples:
 
