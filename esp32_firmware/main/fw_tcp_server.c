@@ -12,12 +12,14 @@
 #include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
 
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -59,9 +61,10 @@
 // Persistence format assumption: store raw BC3 bytecode as an NVS blob; blob length comes from NVS metadata.
 #define FW_TCP_NVS_NAMESPACE "fw_shader"
 #define FW_TCP_NVS_KEY_DEFAULT_SHADER "default_bc3"
-#define FW_TCP_V3_STATUS_PAYLOAD_LEN 8U
+#define FW_TCP_V3_STATUS_PAYLOAD_LEN 20U
 #define FW_STARTUP_RGB_STEP_MS 500U
 #define FW_STARTUP_WHITE_MS 1000U
+#define FW_SHADER_FRAME_INTERVAL_MS 25U
 
 typedef struct {
     bool started;
@@ -77,8 +80,16 @@ typedef struct {
     bool shader_active;
     bool default_shader_persisted;
     bool default_shader_faulted;
+    uint32_t shader_slow_frame_count;
+    uint32_t shader_last_slow_frame_ms;
+    uint32_t shader_frame_count;
+    bool uniform_last_color_valid;
+    uint8_t uniform_last_r;
+    uint8_t uniform_last_g;
+    uint8_t uniform_last_b;
     fw_bc3_program_t uploaded_program;
     fw_bc3_runtime_t runtime;
+    SemaphoreHandle_t state_lock;
     uint16_t port;
     fw_led_output_t led_output;
 } fw_tcp_server_state_t;
@@ -184,21 +195,26 @@ static esp_err_t fw_tcp_blit_frame(fw_tcp_server_state_t *state, uint8_t bytes_p
         return ESP_OK;
     }
 
-    uint32_t logical_index = 0;
-    while (logical_index < state->led_count) {
-        fw_led_physical_index_t mapped = {0};
-        esp_err_t map_err = fw_led_map_logical_linear(&state->layout, logical_index, &mapped);
-        if (map_err != ESP_OK) {
-            return map_err;
-        }
+    uint32_t logical_index = 0U;
+    for (uint16_t y = 0; y < state->layout.height; y += 1U) {
+        for (uint16_t x = 0; x < state->layout.width; x += 1U) {
+            uint16_t mapped_y = y;
+            if (state->layout.serpentine_columns && ((x & 1U) != 0U)) {
+                mapped_y = (uint16_t)(state->layout.height - 1U - y);
+            }
+            const uint32_t physical_index = ((uint32_t)x * (uint32_t)state->layout.height) + mapped_y;
+            if (physical_index >= state->led_count) {
+                return ESP_ERR_INVALID_SIZE;
+            }
 
-        const size_t src_offset = (size_t)logical_index * bytes_per_pixel;
-        const size_t dst_offset = (size_t)mapped.global_led_index * bytes_per_pixel;
-        if (dst_offset + bytes_per_pixel > state->frame_buffer_len) {
-            return ESP_ERR_INVALID_SIZE;
+            const size_t src_offset = (size_t)logical_index * bytes_per_pixel;
+            const size_t dst_offset = (size_t)physical_index * bytes_per_pixel;
+            if (dst_offset + bytes_per_pixel > state->frame_buffer_len) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+            memcpy(state->frame_buffer + dst_offset, payload + src_offset, bytes_per_pixel);
+            logical_index += 1U;
         }
-        memcpy(state->frame_buffer + dst_offset, payload + src_offset, bytes_per_pixel);
-        logical_index += 1U;
     }
 
     return ESP_OK;
@@ -273,6 +289,141 @@ static esp_err_t fw_tcp_show_startup_sequence(fw_tcp_server_state_t *state) {
         return err;
     }
     return fw_tcp_show_startup_color(state, 0U, 0U, 0U, 0U);
+}
+
+static uint8_t fw_tcp_channel_to_u8(float value) {
+    float clamped = value;
+    if (clamped < 0.0f) {
+        clamped = 0.0f;
+    } else if (clamped > 1.0f) {
+        clamped = 1.0f;
+    }
+    return (uint8_t)(clamped * 255.0f + 0.5f);
+}
+
+static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state, float time_seconds, uint32_t frame_counter) {
+    if (state == NULL || !state->shader_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    fw_bc3_status_t vm_status = fw_bc3_runtime_begin_frame(&state->runtime, time_seconds, frame_counter);
+    if (vm_status != FW_BC3_OK) {
+        ESP_LOGW(TAG, "shader begin_frame failed: %s", fw_bc3_status_to_string(vm_status));
+        return ESP_FAIL;
+    }
+
+    const size_t bytes_per_pixel = 3U;
+    const size_t required_len = (size_t)state->led_count * bytes_per_pixel;
+    if (required_len > state->frame_buffer_len) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (state->runtime.program != NULL && state->runtime.program->pixel_depends_xy == 0U) {
+        fw_bc3_color_t color = {0};
+        vm_status = fw_bc3_runtime_eval_pixel(&state->runtime, 0.0f, 0.0f, &color);
+        if (vm_status != FW_BC3_OK) {
+            ESP_LOGW(TAG, "shader eval_pixel failed: %s", fw_bc3_status_to_string(vm_status));
+            return ESP_FAIL;
+        }
+
+        const uint8_t r = fw_tcp_channel_to_u8(color.r);
+        const uint8_t g = fw_tcp_channel_to_u8(color.g);
+        const uint8_t b = fw_tcp_channel_to_u8(color.b);
+        if (state->uniform_last_color_valid && state->uniform_last_r == r && state->uniform_last_g == g &&
+            state->uniform_last_b == b) {
+            return ESP_OK;
+        }
+        esp_err_t push_err = fw_led_output_push_uniform_rgb(&state->led_output, r, g, b);
+        if (push_err == ESP_OK) {
+            state->uniform_last_color_valid = true;
+            state->uniform_last_r = r;
+            state->uniform_last_g = g;
+            state->uniform_last_b = b;
+        }
+        return push_err;
+    }
+    state->uniform_last_color_valid = false;
+
+    uint32_t logical_index = 0U;
+    for (uint16_t y = 0; y < state->layout.height; y += 1U) {
+        for (uint16_t x = 0; x < state->layout.width; x += 1U) {
+            fw_bc3_color_t color = {0};
+            vm_status = fw_bc3_runtime_eval_pixel(&state->runtime, (float)x, (float)y, &color);
+            if (vm_status != FW_BC3_OK) {
+                ESP_LOGW(TAG, "shader eval_pixel failed: %s", fw_bc3_status_to_string(vm_status));
+                return ESP_FAIL;
+            }
+            if (logical_index >= state->led_count) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            uint16_t mapped_y = y;
+            if (state->layout.serpentine_columns && ((x & 1U) != 0U)) {
+                mapped_y = (uint16_t)(state->layout.height - 1U - y);
+            }
+            const uint32_t physical_index = ((uint32_t)x * (uint32_t)state->layout.height) + mapped_y;
+            if (physical_index >= state->led_count) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            const size_t offset = (size_t)physical_index * bytes_per_pixel;
+            if (offset + bytes_per_pixel > state->frame_buffer_len) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+            state->frame_buffer[offset] = fw_tcp_channel_to_u8(color.r);
+            state->frame_buffer[offset + 1U] = fw_tcp_channel_to_u8(color.g);
+            state->frame_buffer[offset + 2U] = fw_tcp_channel_to_u8(color.b);
+            logical_index += 1U;
+        }
+    }
+
+    return fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
+}
+
+static void fw_tcp_shader_task(void *arg) {
+    fw_tcp_server_state_t *state = (fw_tcp_server_state_t *)arg;
+    const int64_t shader_time_start_us = esp_timer_get_time();
+    uint32_t frame_counter = 0U;
+    TickType_t last_wake_tick = xTaskGetTickCount();
+    const TickType_t frame_interval_ticks = pdMS_TO_TICKS(FW_SHADER_FRAME_INTERVAL_MS);
+
+    while (true) {
+        if (state->state_lock != NULL && xSemaphoreTake(state->state_lock, portMAX_DELAY) == pdTRUE) {
+            if (state->shader_active) {
+                const int64_t now_us = esp_timer_get_time();
+                const float time_seconds = (float)(now_us - shader_time_start_us) / 1000000.0f;
+                const int64_t render_start_us = now_us;
+                esp_err_t render_err = fw_tcp_render_shader_frame_locked(state, time_seconds, frame_counter);
+                const int64_t frame_elapsed_us = esp_timer_get_time() - render_start_us;
+                if (render_err != ESP_OK) {
+                    state->shader_active = false;
+                    state->uniform_last_color_valid = false;
+                    ESP_LOGW(TAG, "shader render stopped: %s", esp_err_to_name(render_err));
+                } else {
+                    if (frame_elapsed_us > 200000) {
+                        uint64_t slow_frame_ms = (uint64_t)(frame_elapsed_us / 1000);
+                        if (slow_frame_ms > UINT32_MAX) {
+                            slow_frame_ms = UINT32_MAX;
+                        }
+                        state->shader_last_slow_frame_ms = (uint32_t)slow_frame_ms;
+                        state->shader_slow_frame_count += 1U;
+                        ESP_LOGW(TAG, "slow shader frame: %" PRIu64 " ms", slow_frame_ms);
+                    }
+                    frame_counter += 1U;
+                    state->shader_frame_count = frame_counter;
+                }
+            } else {
+                frame_counter = 0U;
+                state->shader_frame_count = 0U;
+            }
+            xSemaphoreGive(state->state_lock);
+        }
+        if (frame_interval_ticks > 0) {
+            vTaskDelayUntil(&last_wake_tick, frame_interval_ticks);
+        } else {
+            taskYIELD();
+        }
+    }
 }
 
 static esp_err_t fw_tcp_clear_persisted_default_shader(void) {
@@ -371,6 +522,7 @@ static esp_err_t fw_tcp_load_persisted_default_shader(fw_tcp_server_state_t *sta
     state->bytecode_blob_len = read_len;
     state->has_uploaded_program = true;
     state->shader_active = true;
+    state->uniform_last_color_valid = false;
     state->default_shader_persisted = true;
     state->default_shader_faulted = false;
     return ESP_OK;
@@ -384,6 +536,10 @@ static uint8_t fw_tcp_handle_v3_upload(fw_tcp_server_state_t *state, const uint8
         return FW_TCP_V3_STATUS_TOO_LARGE;
     }
 
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+
     memcpy(state->bytecode_blob, payload, payload_len);
     fw_bc3_status_t vm_status = fw_bc3_program_load(&state->uploaded_program, state->bytecode_blob, payload_len);
     if (vm_status != FW_BC3_OK) {
@@ -391,12 +547,16 @@ static uint8_t fw_tcp_handle_v3_upload(fw_tcp_server_state_t *state, const uint8
         state->has_uploaded_program = false;
         state->bytecode_blob_len = 0U;
         state->shader_active = false;
+        state->uniform_last_color_valid = false;
+        xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_VM_ERROR;
     }
 
     state->bytecode_blob_len = payload_len;
     state->has_uploaded_program = true;
     state->shader_active = false;
+    state->uniform_last_color_valid = false;
+    xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
 }
 
@@ -404,7 +564,11 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
     if (state == NULL) {
         return FW_TCP_V3_STATUS_INTERNAL;
     }
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
     if (!state->has_uploaded_program) {
+        xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_NOT_READY;
     }
 
@@ -417,10 +581,14 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
     if (vm_status != FW_BC3_OK) {
         ESP_LOGW(TAG, "shader activate failed: %s", fw_bc3_status_to_string(vm_status));
         state->shader_active = false;
+        state->uniform_last_color_valid = false;
+        xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_VM_ERROR;
     }
 
     state->shader_active = true;
+    state->uniform_last_color_valid = false;
+    xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
 }
 
@@ -433,14 +601,19 @@ static uint8_t fw_tcp_handle_v3_set_hook(fw_tcp_server_state_t *state, const uin
         return FW_TCP_V3_STATUS_NOT_READY;
     }
 
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
     esp_err_t persist_err = fw_tcp_persist_default_shader(state);
     if (persist_err != ESP_OK) {
         ESP_LOGW(TAG, "default shader persist failed: %s", esp_err_to_name(persist_err));
+        xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_INTERNAL;
     }
 
     state->default_shader_persisted = true;
     state->default_shader_faulted = false;
+    xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
 }
 
@@ -456,8 +629,12 @@ static uint8_t fw_tcp_handle_v3_clear_hook(fw_tcp_server_state_t *state, const u
         return FW_TCP_V3_STATUS_INTERNAL;
     }
 
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
     state->default_shader_persisted = false;
     state->default_shader_faulted = false;
+    xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
 }
 
@@ -477,11 +654,18 @@ static uint8_t fw_tcp_handle_v3_query_hook(
         return FW_TCP_V3_STATUS_INTERNAL;
     }
 
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
     response_payload[0] = state->default_shader_persisted ? 1U : 0U;
     response_payload[1] = state->has_uploaded_program ? 1U : 0U;
     response_payload[2] = state->shader_active ? 1U : 0U;
     response_payload[3] = state->default_shader_faulted ? 1U : 0U;
     fw_tcp_write_be_u32(&response_payload[4], (uint32_t)state->bytecode_blob_len);
+    fw_tcp_write_be_u32(&response_payload[8], state->shader_slow_frame_count);
+    fw_tcp_write_be_u32(&response_payload[12], state->shader_last_slow_frame_ms);
+    fw_tcp_write_be_u32(&response_payload[16], state->shader_frame_count);
+    xSemaphoreGive(state->state_lock);
     *out_response_len = FW_TCP_V3_STATUS_PAYLOAD_LEN;
     return FW_TCP_V3_STATUS_OK;
 }
@@ -610,13 +794,19 @@ static bool fw_tcp_handle_frame_message(
         return false;
     }
 
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+
     esp_err_t blit_err = fw_tcp_blit_frame(state, bytes_per_pixel, payload, payload_len);
     if (blit_err != ESP_OK) {
+        xSemaphoreGive(state->state_lock);
         ESP_LOGW(TAG, "frame blit failed: %s", esp_err_to_name(blit_err));
         return false;
     }
     esp_err_t push_err =
         fw_led_output_push_frame(&state->led_output, state->frame_buffer, state->frame_buffer_len, pixel_format, bytes_per_pixel);
+    xSemaphoreGive(state->state_lock);
     if (push_err != ESP_OK) {
         ESP_LOGW(TAG, "frame output failed: %s", esp_err_to_name(push_err));
         return false;
@@ -865,7 +1055,30 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
         ESP_LOGW(TAG, "default shader restore failed: %s", esp_err_to_name(default_shader_err));
     }
 
-    if (xTaskCreate(fw_tcp_server_task, "fw_tcp_server", 8192, &g_fw_tcp_server, 5, NULL) != pdPASS) {
+    g_fw_tcp_server.state_lock = xSemaphoreCreateMutex();
+    if (g_fw_tcp_server.state_lock == NULL) {
+        fw_led_output_deinit(&g_fw_tcp_server.led_output);
+        free(g_fw_tcp_server.frame_buffer);
+        free(g_fw_tcp_server.rx_buffer);
+        free(g_fw_tcp_server.bytecode_blob);
+        memset(&g_fw_tcp_server, 0, sizeof(g_fw_tcp_server));
+        return ESP_ERR_NO_MEM;
+    }
+
+    TaskHandle_t server_task = NULL;
+    if (xTaskCreate(fw_tcp_server_task, "fw_tcp_server", 8192, &g_fw_tcp_server, 5, &server_task) != pdPASS) {
+        vSemaphoreDelete(g_fw_tcp_server.state_lock);
+        fw_led_output_deinit(&g_fw_tcp_server.led_output);
+        free(g_fw_tcp_server.frame_buffer);
+        free(g_fw_tcp_server.rx_buffer);
+        free(g_fw_tcp_server.bytecode_blob);
+        memset(&g_fw_tcp_server, 0, sizeof(g_fw_tcp_server));
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTaskCreate(fw_tcp_shader_task, "fw_tcp_shader", 12288, &g_fw_tcp_server, 4, NULL) != pdPASS) {
+        vTaskDelete(server_task);
+        vSemaphoreDelete(g_fw_tcp_server.state_lock);
         fw_led_output_deinit(&g_fw_tcp_server.led_output);
         free(g_fw_tcp_server.frame_buffer);
         free(g_fw_tcp_server.rx_buffer);

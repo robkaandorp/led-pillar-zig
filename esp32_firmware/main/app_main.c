@@ -65,6 +65,7 @@ static void fw_init_wifi_sta(void) {
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     if (CONFIG_FW_WIFI_SSID[0] == '\0') {
         ESP_LOGW(TAG, "CONFIG_FW_WIFI_SSID is empty; WiFi connect skipped");
         return;

@@ -25,3 +25,4 @@ esp_err_t fw_led_output_push_frame(
     uint8_t pixel_format,
     uint8_t bytes_per_pixel
 );
+esp_err_t fw_led_output_push_uniform_rgb(fw_led_output_t *driver, uint8_t r, uint8_t g, uint8_t b);

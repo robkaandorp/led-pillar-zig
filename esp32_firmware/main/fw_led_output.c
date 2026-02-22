@@ -150,6 +150,45 @@ void fw_led_output_deinit(fw_led_output_t *driver) {
     memset(driver, 0, sizeof(*driver));
 }
 
+static esp_err_t fw_led_output_push_rgb_frame_fast(
+    fw_led_output_t *driver,
+    const uint8_t *frame_buffer,
+    uint8_t bytes_per_pixel
+) {
+    uint32_t global_led_index = 0U;
+    uint8_t segment = 0U;
+    while (segment < driver->layout.segment_count) {
+        led_strip_handle_t strip = driver->segments[segment];
+        if (strip == NULL) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        const uint16_t segment_led_count = driver->layout.segments[segment].led_count;
+        uint16_t led_index = 0U;
+        while (led_index < segment_led_count) {
+            const size_t src_offset = (size_t)(global_led_index + led_index) * bytes_per_pixel;
+            const uint8_t r = driver->gamma_lut[frame_buffer[src_offset]];
+            const uint8_t g = driver->gamma_lut[frame_buffer[src_offset + 1U]];
+            const uint8_t b = driver->gamma_lut[frame_buffer[src_offset + 2U]];
+            esp_err_t set_err = led_strip_set_pixel(strip, led_index, r, g, b);
+            if (set_err != ESP_OK) {
+                return set_err;
+            }
+            led_index += 1U;
+        }
+
+        esp_err_t refresh_err = led_strip_refresh(strip);
+        if (refresh_err != ESP_OK) {
+            return refresh_err;
+        }
+
+        global_led_index += segment_led_count;
+        segment += 1U;
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t fw_led_output_push_frame(
     fw_led_output_t *driver,
     const uint8_t *frame_buffer,
@@ -174,6 +213,9 @@ esp_err_t fw_led_output_push_frame(
     const size_t expected_len = (size_t)total_leds * bytes_per_pixel;
     if (frame_buffer_len < expected_len) {
         return ESP_ERR_INVALID_SIZE;
+    }
+    if (pixel_format == 0U && bytes_per_pixel == 3U) {
+        return fw_led_output_push_rgb_frame_fast(driver, frame_buffer, bytes_per_pixel);
     }
 
     uint32_t global_led_index = 0U;
@@ -215,6 +257,45 @@ esp_err_t fw_led_output_push_frame(
         }
 
         global_led_index += segment_led_count;
+        segment += 1U;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t fw_led_output_push_uniform_rgb(fw_led_output_t *driver, uint8_t r, uint8_t g, uint8_t b) {
+    if (driver == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!driver->initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint8_t corrected_r = driver->gamma_lut[r];
+    const uint8_t corrected_g = driver->gamma_lut[g];
+    const uint8_t corrected_b = driver->gamma_lut[b];
+
+    uint8_t segment = 0U;
+    while (segment < driver->layout.segment_count) {
+        led_strip_handle_t strip = driver->segments[segment];
+        if (strip == NULL) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        const uint16_t segment_led_count = driver->layout.segments[segment].led_count;
+        uint16_t led_index = 0U;
+        while (led_index < segment_led_count) {
+            esp_err_t set_err = led_strip_set_pixel(strip, led_index, corrected_r, corrected_g, corrected_b);
+            if (set_err != ESP_OK) {
+                return set_err;
+            }
+            led_index += 1U;
+        }
+
+        esp_err_t refresh_err = led_strip_refresh(strip);
+        if (refresh_err != ESP_OK) {
+            return refresh_err;
+        }
         segment += 1U;
     }
 

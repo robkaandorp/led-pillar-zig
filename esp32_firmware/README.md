@@ -107,10 +107,10 @@ All messages start with `LEDS` magic and version byte.
 Supported commands:
 
 - `0x01` upload BC3 bytecode blob (max `64 KiB`)
-- `0x02` activate uploaded shader
+- `0x02` activate uploaded shader (starts continuous on-device shader rendering)
 - `0x03` set default shader hook (persist to NVS)
 - `0x04` clear default shader hook (erase from NVS)
-- `0x05` query hook/upload/active/fault state (+ persisted blob size)
+- `0x05` query hook/upload/active/fault state (+ persisted blob size + slow-frame telemetry)
 - `0x06` upload and apply firmware image (raw app `.bin` bytes streamed in payload; device reboots on success)
 
 For `0x06` push OTA, firmware must be built/flashed with an OTA partition table (`CONFIG_PARTITION_TABLE_TWO_OTA=y`).
@@ -118,8 +118,8 @@ If the device was flashed earlier with single-app partitions, do one USB flash f
 
 Responses use command|`0x80` with status byte (`OK`, `INVALID_ARG`, `UNSUPPORTED_CMD`, `TOO_LARGE`, `NOT_READY`, `VM_ERROR`, `INTERNAL`).
 
-`QUERY_DEFAULT_HOOK (0x05)` response payload is 8 bytes:
-`[persisted, uploaded, active, faulted, blob_len_be_u32]`.
+`QUERY_DEFAULT_HOOK (0x05)` response payload is 20 bytes:
+`[persisted, uploaded, active, faulted, blob_len_be_u32, slow_frame_count_be_u32, last_slow_frame_ms_be_u32, frame_count_be_u32]`.
 
 Default shader persistence behavior:
 

@@ -15,6 +15,7 @@ const EffectKind = enum {
     infinite_line,
     infinite_lines,
     dsl_file,
+    bytecode_upload,
     firmware_upload,
 };
 
@@ -29,10 +30,14 @@ const RunConfig = struct {
     infinite_color_transition_seconds: u16 = 10,
     infinite_line_width_pixels: u16 = 1,
     dsl_file_path: ?[]const u8 = null,
+    bytecode_file_path: ?[]const u8 = null,
     firmware_file_path: ?[]const u8 = null,
 };
 
 const v3_protocol_version: u8 = 0x03;
+const v3_cmd_upload_bytecode: u8 = 0x01;
+const v3_cmd_activate_shader: u8 = 0x02;
+const v3_cmd_query_default_hook: u8 = 0x05;
 const v3_cmd_upload_firmware: u8 = 0x06;
 const v3_response_flag: u8 = 0x80;
 
@@ -62,6 +67,14 @@ pub fn main() !void {
     defer args.deinit();
 
     const run_config = try parseRunConfig(&args);
+    if (run_config.effect == .bytecode_upload) {
+        try runBytecodeUpload(
+            run_config.host,
+            run_config.port,
+            run_config.bytecode_file_path orelse return error.MissingBytecodePath,
+        );
+        return;
+    }
     if (run_config.effect == .firmware_upload) {
         try runFirmwareUpload(
             run_config.host,
@@ -138,8 +151,81 @@ pub fn main() !void {
             run_config.dsl_file_path orelse return error.MissingDslPath,
             &shutdown_requested,
         ),
+        .bytecode_upload => unreachable,
         .firmware_upload => unreachable,
     }
+}
+
+fn runBytecodeUpload(host: []const u8, port: u16, bytecode_file_path: []const u8) !void {
+    std.debug.print("Preparing bytecode upload...\n", .{});
+    const input_is_dsl = std.mem.endsWith(u8, bytecode_file_path, ".dsl");
+    var compiled_payload = std.ArrayList(u8).empty;
+    defer compiled_payload.deinit(std.heap.page_allocator);
+
+    var payload_len_usize: usize = 0;
+    if (input_is_dsl) {
+        std.debug.print("Input is DSL; compiling to bytecode first...\n", .{});
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const source = try std.fs.cwd().readFileAlloc(arena.allocator(), bytecode_file_path, std.math.maxInt(usize));
+        const program = try led.dsl_parser.parseAndValidate(arena.allocator(), source);
+        var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
+        defer evaluator.deinit();
+        const payload_writer = compiled_payload.writer(std.heap.page_allocator);
+        try evaluator.writeBytecodeBinary(payload_writer);
+        payload_len_usize = compiled_payload.items.len;
+        std.debug.print("DSL compile complete: {d} bytecode bytes.\n", .{payload_len_usize});
+    } else {
+        const bytecode_stat = try std.fs.cwd().statFile(bytecode_file_path);
+        if (bytecode_stat.size == 0 or bytecode_stat.size > std.math.maxInt(u32)) return error.InvalidBytecodeSize;
+        payload_len_usize = @intCast(bytecode_stat.size);
+    }
+    if (payload_len_usize == 0 or payload_len_usize > std.math.maxInt(u32)) return error.InvalidBytecodeSize;
+    const payload_len: u32 = @intCast(payload_len_usize);
+
+    std.debug.print("Bytecode file: {s}\n", .{bytecode_file_path});
+    std.debug.print("Payload size: {d} bytes\n", .{payload_len});
+    std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
+    var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
+    defer stream.close();
+    std.debug.print("Connected.\n", .{});
+
+    std.debug.print("Sending v3 bytecode upload header (cmd=0x01)...\n", .{});
+    try writeV3Header(&stream, v3_cmd_upload_bytecode, payload_len);
+
+    var sent_total: usize = 0;
+    if (input_is_dsl) {
+        try stream.writeAll(compiled_payload.items);
+        sent_total = compiled_payload.items.len;
+    } else {
+        var bytecode_file = try std.fs.cwd().openFile(bytecode_file_path, .{});
+        defer bytecode_file.close();
+        var send_buf: [16 * 1024]u8 = undefined;
+        while (true) {
+            const read_len = try bytecode_file.read(send_buf[0..]);
+            if (read_len == 0) break;
+            try stream.writeAll(send_buf[0..read_len]);
+            sent_total += read_len;
+        }
+    }
+    if (sent_total != payload_len_usize) return error.InvalidBytecodeSize;
+
+    const upload_response = try readV3StatusResponse(&stream, v3_cmd_upload_bytecode);
+    if (upload_response.status != 0) {
+        std.debug.print("Bytecode upload failed: v3 status={d} ({s})\n", .{ upload_response.status, v3StatusName(upload_response.status) });
+        return error.V3CommandFailed;
+    }
+
+    std.debug.print("Activating uploaded shader (cmd=0x02)...\n", .{});
+    try writeV3Header(&stream, v3_cmd_activate_shader, 0);
+    const activate_response = try readV3StatusResponse(&stream, v3_cmd_activate_shader);
+    if (activate_response.status != 0) {
+        std.debug.print("Shader activation failed: v3 status={d} ({s})\n", .{ activate_response.status, v3StatusName(activate_response.status) });
+        return error.V3CommandFailed;
+    }
+
+    std.debug.print("Bytecode upload + activation completed successfully.\n", .{});
+    try monitorShaderSlowFrames(&stream);
 }
 
 fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8) !void {
@@ -158,19 +244,8 @@ fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8
     defer stream.close();
     std.debug.print("Connected.\n", .{});
 
-    var header: [led.tcp_client.header_len]u8 = undefined;
-    header[0] = 'L';
-    header[1] = 'E';
-    header[2] = 'D';
-    header[3] = 'S';
-    header[4] = v3_protocol_version;
-    header[5] = @as(u8, @intCast((payload_len >> 24) & 0xff));
-    header[6] = @as(u8, @intCast((payload_len >> 16) & 0xff));
-    header[7] = @as(u8, @intCast((payload_len >> 8) & 0xff));
-    header[8] = @as(u8, @intCast(payload_len & 0xff));
-    header[9] = v3_cmd_upload_firmware;
     std.debug.print("Sending v3 upload header (cmd=0x06)...\n", .{});
-    try stream.writeAll(&header);
+    try writeV3Header(&stream, v3_cmd_upload_firmware, payload_len);
 
     var upload_timer = try std.time.Timer.start();
     var send_buf: [16 * 1024]u8 = undefined;
@@ -199,25 +274,12 @@ fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8
     }
 
     std.debug.print("Waiting for v3 response...\n", .{});
-    var response_header: [led.tcp_client.header_len]u8 = undefined;
-    try readStreamExact(&stream, response_header[0..]);
-    if (!std.mem.eql(u8, response_header[0..4], "LEDS")) return error.InvalidV3Response;
-    if (response_header[4] != v3_protocol_version) return error.InvalidV3Response;
-    if (response_header[9] != (v3_cmd_upload_firmware | v3_response_flag)) return error.InvalidV3Response;
+    const response = try readV3StatusResponse(&stream, v3_cmd_upload_firmware);
+    std.debug.print("Received v3 response header: payload_len={d}\n", .{response.payload_len});
 
-    const response_payload_len = readBeU32(response_header[5..9]);
-    if (response_payload_len < 1) return error.InvalidV3Response;
-    std.debug.print("Received v3 response header: payload_len={d}\n", .{response_payload_len});
-
-    var status_byte: [1]u8 = undefined;
-    try readStreamExact(&stream, status_byte[0..]);
-    if (response_payload_len > 1) {
-        try drainStream(&stream, response_payload_len - 1);
-    }
-
-    if (status_byte[0] != 0) {
-        std.debug.print("Firmware upload failed: v3 status={d} ({s})\n", .{ status_byte[0], v3StatusName(status_byte[0]) });
-        if (status_byte[0] == 4) {
+    if (response.status != 0) {
+        std.debug.print("Firmware upload failed: v3 status={d} ({s})\n", .{ response.status, v3StatusName(response.status) });
+        if (response.status == 4) {
             std.debug.print(
                 "Hint: device OTA partition table not ready; flash once over USB with CONFIG_PARTITION_TABLE_TWO_OTA enabled.\n",
                 .{},
@@ -435,6 +497,10 @@ fn parseRunConfig(args: anytype) !RunConfig {
             run_config.dsl_file_path = args.next() orelse return error.MissingDslPath;
             if (args.next() != null) return error.TooManyArguments;
         },
+        .bytecode_upload => {
+            run_config.bytecode_file_path = args.next() orelse return error.MissingBytecodePath;
+            if (args.next() != null) return error.TooManyArguments;
+        },
         .firmware_upload => {
             run_config.firmware_file_path = args.next() orelse return error.MissingFirmwarePath;
             if (args.next() != null) return error.TooManyArguments;
@@ -455,6 +521,7 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
     if (std.mem.eql(u8, effect_arg, "infinite-line")) return .infinite_line;
     if (std.mem.eql(u8, effect_arg, "infinite-lines")) return .infinite_lines;
     if (std.mem.eql(u8, effect_arg, "dsl-file")) return .dsl_file;
+    if (std.mem.eql(u8, effect_arg, "bytecode-upload")) return .bytecode_upload;
     if (std.mem.eql(u8, effect_arg, "firmware-upload")) return .firmware_upload;
     return error.UnknownEffect;
 }
@@ -465,6 +532,194 @@ fn readStreamExact(stream: *std.net.Stream, buffer: []u8) !void {
         const read_len = try stream.read(buffer[offset..]);
         if (read_len == 0) return error.EndOfStream;
         offset += read_len;
+    }
+}
+
+const V3StatusResponse = struct {
+    status: u8,
+    payload_len: u32,
+};
+
+const V3QueryStatus = struct {
+    default_shader_persisted: bool,
+    has_uploaded_program: bool,
+    shader_active: bool,
+    default_shader_faulted: bool,
+    bytecode_blob_len: u32,
+    slow_frame_count: u32 = 0,
+    last_slow_frame_ms: u32 = 0,
+    has_slow_frame_metrics: bool = false,
+    frame_count: u32 = 0,
+    has_frame_metrics: bool = false,
+};
+
+fn writeV3Header(stream: *std.net.Stream, cmd: u8, payload_len: u32) !void {
+    var header: [led.tcp_client.header_len]u8 = undefined;
+    header[0] = 'L';
+    header[1] = 'E';
+    header[2] = 'D';
+    header[3] = 'S';
+    header[4] = v3_protocol_version;
+    header[5] = @as(u8, @intCast((payload_len >> 24) & 0xff));
+    header[6] = @as(u8, @intCast((payload_len >> 16) & 0xff));
+    header[7] = @as(u8, @intCast((payload_len >> 8) & 0xff));
+    header[8] = @as(u8, @intCast(payload_len & 0xff));
+    header[9] = cmd;
+    try stream.writeAll(&header);
+}
+
+fn readV3StatusResponse(stream: *std.net.Stream, expected_cmd: u8) !V3StatusResponse {
+    var response_header: [led.tcp_client.header_len]u8 = undefined;
+    try readStreamExact(stream, response_header[0..]);
+    if (!std.mem.eql(u8, response_header[0..4], "LEDS")) return error.InvalidV3Response;
+    if (response_header[4] != v3_protocol_version) return error.InvalidV3Response;
+    if (response_header[9] != (expected_cmd | v3_response_flag)) return error.InvalidV3Response;
+
+    const response_payload_len = readBeU32(response_header[5..9]);
+    if (response_payload_len < 1) return error.InvalidV3Response;
+
+    var status_byte: [1]u8 = undefined;
+    try readStreamExact(stream, status_byte[0..]);
+    if (response_payload_len > 1) {
+        try drainStream(stream, response_payload_len - 1);
+    }
+    return .{
+        .status = status_byte[0],
+        .payload_len = response_payload_len,
+    };
+}
+
+fn queryV3Status(stream: *std.net.Stream) !V3QueryStatus {
+    try writeV3Header(stream, v3_cmd_query_default_hook, 0);
+
+    var response_header: [led.tcp_client.header_len]u8 = undefined;
+    try readStreamExact(stream, response_header[0..]);
+    if (!std.mem.eql(u8, response_header[0..4], "LEDS")) return error.InvalidV3Response;
+    if (response_header[4] != v3_protocol_version) return error.InvalidV3Response;
+    if (response_header[9] != (v3_cmd_query_default_hook | v3_response_flag)) return error.InvalidV3Response;
+
+    const response_payload_len = readBeU32(response_header[5..9]);
+    if (response_payload_len < 1) return error.InvalidV3Response;
+
+    var status_byte: [1]u8 = undefined;
+    try readStreamExact(stream, status_byte[0..]);
+
+    const response_data_len = response_payload_len - 1;
+    var payload: [20]u8 = undefined;
+    if (response_data_len > payload.len) {
+        try drainStream(stream, response_data_len);
+        return error.InvalidV3Response;
+    }
+    if (response_data_len > 0) {
+        try readStreamExact(stream, payload[0..response_data_len]);
+    }
+
+    if (status_byte[0] != 0) {
+        return error.V3CommandFailed;
+    }
+    if (response_data_len < 8) {
+        return error.InvalidV3Response;
+    }
+
+    var status = V3QueryStatus{
+        .default_shader_persisted = payload[0] != 0,
+        .has_uploaded_program = payload[1] != 0,
+        .shader_active = payload[2] != 0,
+        .default_shader_faulted = payload[3] != 0,
+        .bytecode_blob_len = readBeU32(payload[4..8]),
+    };
+    if (response_data_len >= 16) {
+        status.slow_frame_count = readBeU32(payload[8..12]);
+        status.last_slow_frame_ms = readBeU32(payload[12..16]);
+        status.has_slow_frame_metrics = true;
+    }
+    if (response_data_len >= 20) {
+        status.frame_count = readBeU32(payload[16..20]);
+        status.has_frame_metrics = true;
+    }
+    return status;
+}
+
+fn pollStdinForEnter(timeout_ms: i32) !bool {
+    if (builtin.os.tag == .windows) {
+        std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+        return false;
+    }
+
+    var poll_fds = [_]std.posix.pollfd{
+        .{
+            .fd = std.posix.STDIN_FILENO,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        },
+    };
+
+    const ready = try std.posix.poll(&poll_fds, timeout_ms);
+    if (ready <= 0) {
+        return false;
+    }
+    return (poll_fds[0].revents & std.posix.POLL.IN) != 0;
+}
+
+fn drainStdinInput() void {
+    if (builtin.os.tag == .windows) return;
+    var scratch: [64]u8 = undefined;
+    _ = std.posix.read(std.posix.STDIN_FILENO, scratch[0..]) catch {};
+}
+
+fn monitorShaderSlowFrames(stream: *std.net.Stream) !void {
+    var status = queryV3Status(stream) catch |err| switch (err) {
+        error.V3CommandFailed => {
+            std.debug.print("Shader monitor query failed.\n", .{});
+            return;
+        },
+        else => return err,
+    };
+
+    if (!status.has_slow_frame_metrics and !status.has_frame_metrics) {
+        std.debug.print("Firmware does not expose shader telemetry yet; use `idf.py monitor` to see ESP logs.\n", .{});
+        return;
+    }
+
+    std.debug.print("Monitoring shader telemetry (FPS + slow frames); press Enter to stop.\n", .{});
+    var last_slow_frame_count = status.slow_frame_count;
+    var last_frame_count = status.frame_count;
+    var last_fps_time_ms = std.time.milliTimestamp();
+
+    while (true) {
+        if (try pollStdinForEnter(500)) {
+            drainStdinInput();
+            std.debug.print("Stopped shader monitor.\n", .{});
+            return;
+        }
+
+        status = queryV3Status(stream) catch |err| switch (err) {
+            error.V3CommandFailed => {
+                std.debug.print("Shader monitor query failed.\n", .{});
+                return;
+            },
+            else => return err,
+        };
+
+        if (status.slow_frame_count > last_slow_frame_count) {
+            std.debug.print(
+                "slow shader frame(s): +{d}, latest={d} ms\n",
+                .{ status.slow_frame_count - last_slow_frame_count, status.last_slow_frame_ms },
+            );
+            last_slow_frame_count = status.slow_frame_count;
+        }
+
+        if (status.has_frame_metrics) {
+            const now_ms = std.time.milliTimestamp();
+            const elapsed_ms: u64 = @intCast(@max(now_ms - last_fps_time_ms, 0));
+            if (elapsed_ms >= 1000) {
+                const delta_frames = status.frame_count -% last_frame_count;
+                const fps = (@as(f64, @floatFromInt(delta_frames)) * 1000.0) / @as(f64, @floatFromInt(elapsed_ms));
+                std.debug.print("shader fps: {d:.1}\n", .{fps});
+                last_frame_count = status.frame_count;
+                last_fps_time_ms = now_ms;
+            }
+        }
     }
 }
 
@@ -514,6 +769,7 @@ test "parseEffectKind accepts known effect names" {
     try std.testing.expectEqual(.infinite_line, try parseEffectKind("infinite-line"));
     try std.testing.expectEqual(.infinite_lines, try parseEffectKind("infinite-lines"));
     try std.testing.expectEqual(.dsl_file, try parseEffectKind("dsl-file"));
+    try std.testing.expectEqual(.bytecode_upload, try parseEffectKind("bytecode-upload"));
     try std.testing.expectEqual(.firmware_upload, try parseEffectKind("firmware-upload"));
 }
 
@@ -571,4 +827,20 @@ test "parseRunConfig firmware-upload requires path" {
         .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "firmware-upload" },
     };
     try std.testing.expectError(error.MissingFirmwarePath, parseRunConfig(&args));
+}
+
+test "parseRunConfig parses bytecode-upload mode" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "bytecode-upload", "bytecode/soap-bubbles.bin" },
+    };
+    const run_config = try parseRunConfig(&args);
+    try std.testing.expectEqual(.bytecode_upload, run_config.effect);
+    try std.testing.expectEqualStrings("bytecode/soap-bubbles.bin", run_config.bytecode_file_path.?);
+}
+
+test "parseRunConfig bytecode-upload requires path" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "bytecode-upload" },
+    };
+    try std.testing.expectError(error.MissingBytecodePath, parseRunConfig(&args));
 }

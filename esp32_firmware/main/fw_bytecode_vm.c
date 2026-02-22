@@ -7,6 +7,11 @@
 #define FW_BC3_INPUT_SLOT_COUNT 6U
 #define FW_BC3_MAX_CALL_ARGS 8U
 #define FW_BC3_BUILTIN_COUNT 20U
+#define FW_BC3_FIXED_FRAC_BITS 16
+#define FW_BC3_FIXED_ONE (1 << FW_BC3_FIXED_FRAC_BITS)
+#define FW_BC3_FIXED_INV_ONE (1.0f / (float)FW_BC3_FIXED_ONE)
+#define FW_BC3_FIXED_MAX_FLOAT 32767.99998f
+#define FW_BC3_FIXED_MIN_FLOAT -32768.0f
 
 typedef enum {
     FW_BC3_OP_PUSH_LITERAL = 1,
@@ -70,12 +75,12 @@ typedef struct {
 } fw_bc3_slot_ref_t;
 
 typedef struct {
-    float time;
-    float frame;
-    float x;
-    float y;
-    float width;
-    float height;
+    int32_t time;
+    int32_t frame;
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
 } fw_bc3_inputs_t;
 
 typedef struct {
@@ -88,12 +93,47 @@ typedef enum {
     FW_BC3_PARAM_EVAL_ALL = 0,
     FW_BC3_PARAM_EVAL_STATIC_ONLY = 1,
     FW_BC3_PARAM_EVAL_DYNAMIC_ONLY = 2,
+    FW_BC3_PARAM_EVAL_DYNAMIC_X_ONLY = 3,
+    FW_BC3_PARAM_EVAL_DYNAMIC_Y_ONLY = 4,
 } fw_bc3_param_eval_mode_t;
+
+static inline int32_t fw_bc3_fixed_from_float(float value) {
+    if (value >= FW_BC3_FIXED_MAX_FLOAT) {
+        return INT32_MAX;
+    }
+    if (value <= FW_BC3_FIXED_MIN_FLOAT) {
+        return INT32_MIN;
+    }
+    return (int32_t)(value * (float)FW_BC3_FIXED_ONE);
+}
+
+static inline float fw_bc3_fixed_to_float(int32_t value) {
+    return (float)value * FW_BC3_FIXED_INV_ONE;
+}
+
+static inline int32_t fw_bc3_fixed_add(int32_t a, int32_t b) {
+    return a + b;
+}
+
+static inline int32_t fw_bc3_fixed_sub(int32_t a, int32_t b) {
+    return a - b;
+}
+
+static inline int32_t fw_bc3_fixed_mul(int32_t a, int32_t b) {
+    return (int32_t)(((int64_t)a * (int64_t)b) >> FW_BC3_FIXED_FRAC_BITS);
+}
+
+static inline int32_t fw_bc3_fixed_div(int32_t a, int32_t b) {
+    if (b == 0) {
+        return (a >= 0) ? INT32_MAX : INT32_MIN;
+    }
+    return (int32_t)(((int64_t)a << FW_BC3_FIXED_FRAC_BITS) / b);
+}
 
 static fw_bc3_value_t fw_bc3_make_scalar(float scalar) {
     fw_bc3_value_t value = {
         .tag = FW_BC3_VALUE_SCALAR,
-        .as.scalar = scalar,
+        .as.scalar = fw_bc3_fixed_from_float(scalar),
     };
     return value;
 }
@@ -151,8 +191,7 @@ static fw_bc3_status_t fw_bc3_parse_runtime_value(fw_bc3_cursor_t *cursor, fw_bc
             return status;
         }
         if (out != NULL) {
-            out->tag = FW_BC3_VALUE_SCALAR;
-            out->as.scalar = scalar;
+            *out = fw_bc3_make_scalar(scalar);
         }
         return FW_BC3_OK;
     }
@@ -364,6 +403,203 @@ static fw_bc3_status_t fw_bc3_parse_expression(fw_bc3_program_t *program, fw_bc3
     return FW_BC3_OK;
 }
 
+static fw_bc3_status_t fw_bc3_expression_scan_input_dependencies(
+    const fw_bc3_program_t *program,
+    uint16_t expr_index,
+    bool include_param_dependencies,
+    bool *uses_x,
+    bool *uses_y
+) {
+    if (program == NULL || uses_x == NULL || uses_y == NULL || expr_index >= program->expr_count) {
+        return FW_BC3_ERR_INVALID_ARG;
+    }
+
+    const fw_bc3_expr_view_t *expr = &program->expressions[expr_index];
+    if ((size_t)expr->byte_offset >= program->blob_len) {
+        return FW_BC3_ERR_TRUNCATED;
+    }
+
+    fw_bc3_cursor_t cursor = {
+        .base = program->blob,
+        .cur = program->blob + expr->byte_offset,
+        .end = program->blob + program->blob_len,
+    };
+
+    bool local_uses_x = false;
+    bool local_uses_y = false;
+    uint16_t i = 0U;
+    while (i < expr->instruction_count) {
+        uint8_t opcode = 0U;
+        fw_bc3_status_t status = fw_bc3_cursor_read_u8(&cursor, &opcode);
+        if (status != FW_BC3_OK) {
+            return status;
+        }
+
+        if (opcode == FW_BC3_OP_PUSH_LITERAL) {
+            status = fw_bc3_parse_runtime_value(&cursor, NULL);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+        } else if (opcode == FW_BC3_OP_PUSH_SLOT) {
+            fw_bc3_slot_ref_t slot = {0};
+            status = fw_bc3_parse_slot_ref(&cursor, &slot);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            if (slot.tag == FW_BC3_SLOT_INPUT) {
+                if (slot.index == FW_BC3_INPUT_X) {
+                    local_uses_x = true;
+                } else if (slot.index == FW_BC3_INPUT_Y) {
+                    local_uses_y = true;
+                }
+            } else if (include_param_dependencies && slot.tag == FW_BC3_SLOT_PARAM && slot.index < program->param_count) {
+                if (program->param_depends_x[slot.index] != 0U) {
+                    local_uses_x = true;
+                }
+                if (program->param_depends_y[slot.index] != 0U) {
+                    local_uses_y = true;
+                }
+            }
+        } else if (opcode == FW_BC3_OP_CALL_BUILTIN) {
+            uint8_t builtin = 0U;
+            uint8_t arg_count = 0U;
+            status = fw_bc3_cursor_read_u8(&cursor, &builtin);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            status = fw_bc3_cursor_read_u8(&cursor, &arg_count);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+        } else if (
+            opcode == FW_BC3_OP_NEGATE || opcode == FW_BC3_OP_ADD || opcode == FW_BC3_OP_SUB || opcode == FW_BC3_OP_MUL ||
+            opcode == FW_BC3_OP_DIV
+        ) {
+            // No payload.
+        } else {
+            return FW_BC3_ERR_INVALID_OPCODE;
+        }
+
+        if (local_uses_x && local_uses_y) {
+            break;
+        }
+        i += 1U;
+    }
+
+    *uses_x = local_uses_x;
+    *uses_y = local_uses_y;
+    return FW_BC3_OK;
+}
+
+static fw_bc3_status_t fw_bc3_statement_block_depends_xy(
+    const fw_bc3_program_t *program,
+    uint16_t start,
+    uint16_t count,
+    uint8_t depth,
+    bool *depends_xy
+) {
+    if (program == NULL || depends_xy == NULL || depth > FW_BC3_MAX_STATEMENT_DEPTH) {
+        return FW_BC3_ERR_INVALID_ARG;
+    }
+    if ((uint32_t)start + (uint32_t)count > program->stmt_count) {
+        return FW_BC3_ERR_FORMAT;
+    }
+
+    bool local_depends = false;
+    uint16_t i = 0U;
+    while (i < count && !local_depends) {
+        const fw_bc3_stmt_view_t *stmt = &program->statements[start + i];
+        bool uses_x = false;
+        bool uses_y = false;
+        fw_bc3_status_t status = FW_BC3_OK;
+
+        switch (stmt->kind) {
+            case FW_BC3_STMT_LET:
+                status = fw_bc3_expression_scan_input_dependencies(
+                    program,
+                    stmt->as.let_decl.expr_index,
+                    true,
+                    &uses_x,
+                    &uses_y
+                );
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                local_depends = uses_x || uses_y;
+                break;
+            case FW_BC3_STMT_BLEND:
+                status = fw_bc3_expression_scan_input_dependencies(
+                    program,
+                    stmt->as.blend.expr_index,
+                    true,
+                    &uses_x,
+                    &uses_y
+                );
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                local_depends = uses_x || uses_y;
+                break;
+            case FW_BC3_STMT_IF:
+                status = fw_bc3_expression_scan_input_dependencies(
+                    program,
+                    stmt->as.if_stmt.cond_expr_index,
+                    true,
+                    &uses_x,
+                    &uses_y
+                );
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                local_depends = uses_x || uses_y;
+                if (!local_depends) {
+                    status = fw_bc3_statement_block_depends_xy(
+                        program,
+                        stmt->as.if_stmt.then_start,
+                        stmt->as.if_stmt.then_count,
+                        (uint8_t)(depth + 1U),
+                        &local_depends
+                    );
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                }
+                if (!local_depends) {
+                    status = fw_bc3_statement_block_depends_xy(
+                        program,
+                        stmt->as.if_stmt.else_start,
+                        stmt->as.if_stmt.else_count,
+                        (uint8_t)(depth + 1U),
+                        &local_depends
+                    );
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                }
+                break;
+            case FW_BC3_STMT_FOR:
+                status = fw_bc3_statement_block_depends_xy(
+                    program,
+                    stmt->as.for_stmt.body_start,
+                    stmt->as.for_stmt.body_count,
+                    (uint8_t)(depth + 1U),
+                    &local_depends
+                );
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                break;
+            default:
+                return FW_BC3_ERR_FORMAT;
+        }
+
+        i += 1U;
+    }
+
+    *depends_xy = local_depends;
+    return FW_BC3_OK;
+}
+
 static uint16_t fw_bc3_max_u16(uint16_t a, uint16_t b) {
     return (a > b) ? a : b;
 }
@@ -562,6 +798,8 @@ fw_bc3_status_t fw_bc3_program_load(fw_bc3_program_t *program, const uint8_t *bl
     while (param_index < param_count) {
         uint8_t depends_on_xy = 0;
         uint16_t expr_index = 0;
+        bool depends_on_x = false;
+        bool depends_on_y = false;
         status = fw_bc3_cursor_read_u8(&cursor, &depends_on_xy);
         if (status != FW_BC3_OK) {
             return status;
@@ -569,12 +807,20 @@ fw_bc3_status_t fw_bc3_program_load(fw_bc3_program_t *program, const uint8_t *bl
         if (depends_on_xy > 1U) {
             return FW_BC3_ERR_FORMAT;
         }
-        program->param_depends_xy[param_index] = depends_on_xy;
 
         status = fw_bc3_parse_expression(program, &cursor, &expr_index);
         if (status != FW_BC3_OK) {
             return status;
         }
+        status = fw_bc3_expression_scan_input_dependencies(program, expr_index, false, &depends_on_x, &depends_on_y);
+        if (status != FW_BC3_OK) {
+            return status;
+        }
+
+        // Keep legacy combined flag for compatibility while using fine-grained runtime flags.
+        program->param_depends_xy[param_index] = (depends_on_x || depends_on_y) ? 1U : 0U;
+        program->param_depends_x[param_index] = depends_on_x ? 1U : 0U;
+        program->param_depends_y[param_index] = depends_on_y ? 1U : 0U;
         program->param_expr[param_index] = expr_index;
         param_index += 1U;
     }
@@ -608,6 +854,26 @@ fw_bc3_status_t fw_bc3_program_load(fw_bc3_program_t *program, const uint8_t *bl
         program->layer_stmt_start[layer_index] = layer_block.start;
         program->layer_stmt_count[layer_index] = layer_block.count;
         program->layer_let_count[layer_index] = layer_block.max_slot_plus_one;
+        layer_index += 1U;
+    }
+
+    layer_index = 0;
+    while (layer_index < layer_count) {
+        bool layer_depends_xy = false;
+        status = fw_bc3_statement_block_depends_xy(
+            program,
+            program->layer_stmt_start[layer_index],
+            program->layer_stmt_count[layer_index],
+            0,
+            &layer_depends_xy
+        );
+        if (status != FW_BC3_OK) {
+            return status;
+        }
+        if (layer_depends_xy) {
+            program->pixel_depends_xy = 1U;
+            break;
+        }
         layer_index += 1U;
     }
 
@@ -704,6 +970,28 @@ static float fw_bc3_wrapped_delta_x(float px, float center_x, float width) {
     return dx;
 }
 
+static float fw_bc3_fast_sin(float x) {
+    const float two_pi = 6.2831853071795864769f;
+    const float inv_two_pi = 0.1591549430918953358f;
+    const float pi = 3.14159265358979323846f;
+    const float b = 1.2732395447351626862f;   // 4/pi
+    const float c = -0.4052847345693510858f;  // -4/(pi*pi)
+    const float p = 0.225f;
+
+    x = x - floorf(x * inv_two_pi) * two_pi;
+    if (x > pi) {
+        x -= two_pi;
+    }
+
+    const float y = (b * x) + (c * x * fabsf(x));
+    return (p * ((y * fabsf(y)) - y)) + y;
+}
+
+static float fw_bc3_fast_cos(float x) {
+    const float pi_over_2 = 1.5707963267948966192f;
+    return fw_bc3_fast_sin(x + pi_over_2);
+}
+
 static fw_bc3_color_t fw_bc3_color_clamped(fw_bc3_color_t color) {
     fw_bc3_color_t out = color;
     out.r = fw_bc3_clamp01(out.r);
@@ -726,15 +1014,24 @@ static fw_bc3_color_t fw_bc3_blend_over(fw_bc3_color_t src, fw_bc3_color_t dst) 
         };
     }
 
+    const float inv_out_a = 1.0f / out_a;
     return (fw_bc3_color_t){
-        .r = ((s.r * s.a) + (d.r * d.a * (1.0f - s.a))) / out_a,
-        .g = ((s.g * s.a) + (d.g * d.a * (1.0f - s.a))) / out_a,
-        .b = ((s.b * s.a) + (d.b * d.a * (1.0f - s.a))) / out_a,
+        .r = ((s.r * s.a) + (d.r * d.a * (1.0f - s.a))) * inv_out_a,
+        .g = ((s.g * s.a) + (d.g * d.a * (1.0f - s.a))) * inv_out_a,
+        .b = ((s.b * s.a) + (d.b * d.a * (1.0f - s.a))) * inv_out_a,
         .a = out_a,
     };
 }
 
 static fw_bc3_status_t fw_bc3_value_as_scalar(const fw_bc3_value_t *value, float *out) {
+    if (value->tag != FW_BC3_VALUE_SCALAR) {
+        return FW_BC3_ERR_TYPE_MISMATCH;
+    }
+    *out = fw_bc3_fixed_to_float(value->as.scalar);
+    return FW_BC3_OK;
+}
+
+static fw_bc3_status_t fw_bc3_value_as_scalar_fixed(const fw_bc3_value_t *value, int32_t *out) {
     if (value->tag != FW_BC3_VALUE_SCALAR) {
         return FW_BC3_ERR_TYPE_MISMATCH;
     }
@@ -776,7 +1073,7 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(sinf(a0));
+            *out = fw_bc3_make_scalar(fw_bc3_fast_sin(a0));
             return FW_BC3_OK;
         case FW_BC3_BUILTIN_COS:
             if (arg_count != 1U) {
@@ -786,7 +1083,7 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(cosf(a0));
+            *out = fw_bc3_make_scalar(fw_bc3_fast_cos(a0));
             return FW_BC3_OK;
         case FW_BC3_BUILTIN_SQRT:
             if (arg_count != 1U) {
@@ -818,88 +1115,116 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             }
             *out = fw_bc3_make_scalar(log10f(a0));
             return FW_BC3_OK;
-        case FW_BC3_BUILTIN_ABS:
+        case FW_BC3_BUILTIN_ABS: {
+            int32_t fixed_a0 = 0;
             if (arg_count != 1U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_a0);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(fabsf(a0));
+            out->tag = FW_BC3_VALUE_SCALAR;
+            if (fixed_a0 == INT32_MIN) {
+                out->as.scalar = INT32_MAX;
+            } else if (fixed_a0 < 0) {
+                out->as.scalar = -fixed_a0;
+            } else {
+                out->as.scalar = fixed_a0;
+            }
             return FW_BC3_OK;
-        case FW_BC3_BUILTIN_FLOOR:
+        }
+        case FW_BC3_BUILTIN_FLOOR: {
+            int32_t floor_input = 0;
             if (arg_count != 1U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            status = fw_bc3_value_as_scalar_fixed(&args[0], &floor_input);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(floorf(a0));
+            out->tag = FW_BC3_VALUE_SCALAR;
+            out->as.scalar = floor_input & ~((int32_t)(FW_BC3_FIXED_ONE - 1));
             return FW_BC3_OK;
-        case FW_BC3_BUILTIN_FRACT:
+        }
+        case FW_BC3_BUILTIN_FRACT: {
+            int32_t fract_input = 0;
             if (arg_count != 1U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            status = fw_bc3_value_as_scalar_fixed(&args[0], &fract_input);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(a0 - floorf(a0));
+            out->tag = FW_BC3_VALUE_SCALAR;
+            out->as.scalar = fw_bc3_fixed_sub(fract_input, fract_input & ~((int32_t)(FW_BC3_FIXED_ONE - 1)));
             return FW_BC3_OK;
-        case FW_BC3_BUILTIN_MIN:
+        }
+        case FW_BC3_BUILTIN_MIN: {
+            int32_t fixed_min_a = 0;
+            int32_t fixed_min_b = 0;
             if (arg_count != 2U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_min_a);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar(&args[1], &a1);
+            status = fw_bc3_value_as_scalar_fixed(&args[1], &fixed_min_b);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar((a0 < a1) ? a0 : a1);
+            out->tag = FW_BC3_VALUE_SCALAR;
+            out->as.scalar = (fixed_min_a < fixed_min_b) ? fixed_min_a : fixed_min_b;
             return FW_BC3_OK;
-        case FW_BC3_BUILTIN_MAX:
+        }
+        case FW_BC3_BUILTIN_MAX: {
+            int32_t fixed_max_a = 0;
+            int32_t fixed_max_b = 0;
             if (arg_count != 2U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_max_a);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar(&args[1], &a1);
+            status = fw_bc3_value_as_scalar_fixed(&args[1], &fixed_max_b);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar((a0 > a1) ? a0 : a1);
+            out->tag = FW_BC3_VALUE_SCALAR;
+            out->as.scalar = (fixed_max_a > fixed_max_b) ? fixed_max_a : fixed_max_b;
             return FW_BC3_OK;
-        case FW_BC3_BUILTIN_CLAMP:
+        }
+        case FW_BC3_BUILTIN_CLAMP: {
+            int32_t fixed_clamp_value = 0;
+            int32_t fixed_clamp_min = 0;
+            int32_t fixed_clamp_max = 0;
             if (arg_count != 3U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_clamp_value);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar(&args[1], &a1);
+            status = fw_bc3_value_as_scalar_fixed(&args[1], &fixed_clamp_min);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar(&args[2], &a2);
+            status = fw_bc3_value_as_scalar_fixed(&args[2], &fixed_clamp_max);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            if (a0 < a1) {
-                *out = fw_bc3_make_scalar(a1);
-            } else if (a0 > a2) {
-                *out = fw_bc3_make_scalar(a2);
+            out->tag = FW_BC3_VALUE_SCALAR;
+            if (fixed_clamp_value < fixed_clamp_min) {
+                out->as.scalar = fixed_clamp_min;
+            } else if (fixed_clamp_value > fixed_clamp_max) {
+                out->as.scalar = fixed_clamp_max;
             } else {
-                *out = fw_bc3_make_scalar(a0);
+                out->as.scalar = fixed_clamp_value;
             }
             return FW_BC3_OK;
+        }
         case FW_BC3_BUILTIN_SMOOTHSTEP:
             if (arg_count != 3U) {
                 return FW_BC3_ERR_FORMAT;
@@ -1083,24 +1408,25 @@ static fw_bc3_status_t fw_bc3_load_slot(
     fw_bc3_value_t *out
 ) {
     if (slot->tag == FW_BC3_SLOT_INPUT) {
+        out->tag = FW_BC3_VALUE_SCALAR;
         switch ((fw_bc3_input_slot_t)slot->index) {
             case FW_BC3_INPUT_TIME:
-                *out = fw_bc3_make_scalar(inputs->time);
+                out->as.scalar = inputs->time;
                 return FW_BC3_OK;
             case FW_BC3_INPUT_FRAME:
-                *out = fw_bc3_make_scalar(inputs->frame);
+                out->as.scalar = inputs->frame;
                 return FW_BC3_OK;
             case FW_BC3_INPUT_X:
-                *out = fw_bc3_make_scalar(inputs->x);
+                out->as.scalar = inputs->x;
                 return FW_BC3_OK;
             case FW_BC3_INPUT_Y:
-                *out = fw_bc3_make_scalar(inputs->y);
+                out->as.scalar = inputs->y;
                 return FW_BC3_OK;
             case FW_BC3_INPUT_WIDTH:
-                *out = fw_bc3_make_scalar(inputs->width);
+                out->as.scalar = inputs->width;
                 return FW_BC3_OK;
             case FW_BC3_INPUT_HEIGHT:
-                *out = fw_bc3_make_scalar(inputs->height);
+                out->as.scalar = inputs->height;
                 return FW_BC3_OK;
             default:
                 return FW_BC3_ERR_INVALID_SLOT;
@@ -1111,7 +1437,8 @@ static fw_bc3_status_t fw_bc3_load_slot(
         if (slot->index >= runtime->program->param_count) {
             return FW_BC3_ERR_INVALID_SLOT;
         }
-        *out = fw_bc3_make_scalar(runtime->param_values[slot->index]);
+        out->tag = FW_BC3_VALUE_SCALAR;
+        out->as.scalar = runtime->param_values[slot->index];
         return FW_BC3_OK;
     }
 
@@ -1196,40 +1523,36 @@ static fw_bc3_status_t fw_bc3_eval_expression(
             runtime->expr_stack[stack_len] = value;
             stack_len += 1U;
         } else if (opcode == FW_BC3_OP_NEGATE) {
-            float scalar = 0.0f;
             if (stack_len < 1U) {
                 return FW_BC3_ERR_STACK_UNDERFLOW;
             }
-            status = fw_bc3_value_as_scalar(&runtime->expr_stack[stack_len - 1U], &scalar);
-            if (status != FW_BC3_OK) {
-                return status;
+            fw_bc3_value_t *top = &runtime->expr_stack[stack_len - 1U];
+            if (top->tag != FW_BC3_VALUE_SCALAR) {
+                return FW_BC3_ERR_TYPE_MISMATCH;
             }
-            runtime->expr_stack[stack_len - 1U] = fw_bc3_make_scalar(-scalar);
+            top->as.scalar = fw_bc3_fixed_sub(0, top->as.scalar);
         } else if (
             opcode == FW_BC3_OP_ADD || opcode == FW_BC3_OP_SUB || opcode == FW_BC3_OP_MUL || opcode == FW_BC3_OP_DIV
         ) {
-            float lhs = 0.0f;
-            float rhs = 0.0f;
             if (stack_len < 2U) {
                 return FW_BC3_ERR_STACK_UNDERFLOW;
             }
-            status = fw_bc3_value_as_scalar(&runtime->expr_stack[stack_len - 2U], &lhs);
-            if (status != FW_BC3_OK) {
-                return status;
+            fw_bc3_value_t *lhs_value = &runtime->expr_stack[stack_len - 2U];
+            fw_bc3_value_t *rhs_value = &runtime->expr_stack[stack_len - 1U];
+            if (lhs_value->tag != FW_BC3_VALUE_SCALAR || rhs_value->tag != FW_BC3_VALUE_SCALAR) {
+                return FW_BC3_ERR_TYPE_MISMATCH;
             }
-            status = fw_bc3_value_as_scalar(&runtime->expr_stack[stack_len - 1U], &rhs);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
+            const int32_t lhs = lhs_value->as.scalar;
+            const int32_t rhs = rhs_value->as.scalar;
             stack_len -= 1U;
             if (opcode == FW_BC3_OP_ADD) {
-                runtime->expr_stack[stack_len - 1U] = fw_bc3_make_scalar(lhs + rhs);
+                lhs_value->as.scalar = fw_bc3_fixed_add(lhs, rhs);
             } else if (opcode == FW_BC3_OP_SUB) {
-                runtime->expr_stack[stack_len - 1U] = fw_bc3_make_scalar(lhs - rhs);
+                lhs_value->as.scalar = fw_bc3_fixed_sub(lhs, rhs);
             } else if (opcode == FW_BC3_OP_MUL) {
-                runtime->expr_stack[stack_len - 1U] = fw_bc3_make_scalar(lhs * rhs);
+                lhs_value->as.scalar = fw_bc3_fixed_mul(lhs, rhs);
             } else {
-                runtime->expr_stack[stack_len - 1U] = fw_bc3_make_scalar(lhs / rhs);
+                lhs_value->as.scalar = fw_bc3_fixed_div(lhs, rhs);
             }
         } else if (opcode == FW_BC3_OP_CALL_BUILTIN) {
             uint8_t builtin = 0;
@@ -1343,7 +1666,7 @@ static fw_bc3_status_t fw_bc3_execute_statement_block(
                 if (condition.tag != FW_BC3_VALUE_SCALAR) {
                     return FW_BC3_ERR_TYPE_MISMATCH;
                 }
-                if (condition.as.scalar > 0.0f) {
+                if (condition.as.scalar > 0) {
                     status = fw_bc3_execute_statement_block(
                         runtime,
                         stmt->as.if_stmt.then_start,
@@ -1388,7 +1711,10 @@ static fw_bc3_status_t fw_bc3_execute_statement_block(
                 }
                 iter = start_value;
                 while (iter < end_value) {
-                    const fw_bc3_value_t index_value = fw_bc3_make_scalar((float)iter);
+                    const fw_bc3_value_t index_value = {
+                        .tag = FW_BC3_VALUE_SCALAR,
+                        .as.scalar = (int32_t)(iter << FW_BC3_FIXED_FRAC_BITS),
+                    };
                     runtime->let_values[stmt->as.for_stmt.index_slot] = index_value;
                     if (frame_mode) {
                         runtime->frame_values[stmt->as.for_stmt.index_slot] = index_value;
@@ -1428,17 +1754,41 @@ static fw_bc3_status_t fw_bc3_evaluate_params(
 ) {
     uint16_t i = 0;
     while (i < runtime->program->param_count) {
-        const bool is_dynamic = runtime->program->param_depends_xy[i] != 0U;
+        const bool depends_x = runtime->program->param_depends_x[i] != 0U;
+        const bool depends_y = runtime->program->param_depends_y[i] != 0U;
+        const bool is_dynamic = depends_x || depends_y;
         fw_bc3_value_t value = {0};
         fw_bc3_status_t status = FW_BC3_OK;
 
-        if (mode == FW_BC3_PARAM_EVAL_STATIC_ONLY && is_dynamic) {
-            i += 1U;
-            continue;
-        }
-        if (mode == FW_BC3_PARAM_EVAL_DYNAMIC_ONLY && !is_dynamic) {
-            i += 1U;
-            continue;
+        switch (mode) {
+            case FW_BC3_PARAM_EVAL_ALL:
+                break;
+            case FW_BC3_PARAM_EVAL_STATIC_ONLY:
+                if (is_dynamic) {
+                    i += 1U;
+                    continue;
+                }
+                break;
+            case FW_BC3_PARAM_EVAL_DYNAMIC_ONLY:
+                if (!is_dynamic) {
+                    i += 1U;
+                    continue;
+                }
+                break;
+            case FW_BC3_PARAM_EVAL_DYNAMIC_X_ONLY:
+                if (!depends_x) {
+                    i += 1U;
+                    continue;
+                }
+                break;
+            case FW_BC3_PARAM_EVAL_DYNAMIC_Y_ONLY:
+                if (!depends_y || depends_x) {
+                    i += 1U;
+                    continue;
+                }
+                break;
+            default:
+                return FW_BC3_ERR_INVALID_ARG;
         }
 
         status = fw_bc3_eval_expression(runtime, runtime->program->param_expr[i], inputs, 0, &value);
@@ -1464,12 +1814,28 @@ fw_bc3_status_t fw_bc3_runtime_init(fw_bc3_runtime_t *runtime, const fw_bc3_prog
     runtime->program = program;
     runtime->width = (float)width;
     runtime->height = (float)height;
+    runtime->width_fixed = fw_bc3_fixed_from_float((float)width);
+    runtime->height_fixed = fw_bc3_fixed_from_float((float)height);
+    runtime->time_fixed = 0;
+    runtime->frame_fixed = 0;
+    runtime->has_dynamic_params = false;
+    runtime->has_x_dynamic_params = false;
+    runtime->has_y_only_dynamic_params = false;
+    runtime->y_only_params_cache_valid = false;
+    runtime->y_only_params_cached_y = 0;
 
     uint16_t i = 0;
     while (i < program->param_count) {
-        if (program->param_depends_xy[i] != 0U) {
+        const bool depends_x = program->param_depends_x[i] != 0U;
+        const bool depends_y = program->param_depends_y[i] != 0U;
+        if (depends_x || depends_y) {
             runtime->has_dynamic_params = true;
-            break;
+            if (depends_x) {
+                runtime->has_x_dynamic_params = true;
+            }
+            if (depends_y && !depends_x) {
+                runtime->has_y_only_dynamic_params = true;
+            }
         }
         i += 1U;
     }
@@ -1487,16 +1853,19 @@ fw_bc3_status_t fw_bc3_runtime_begin_frame(fw_bc3_runtime_t *runtime, float time
 
     runtime->time_seconds = time_seconds;
     runtime->frame_counter = (float)frame_counter;
+    runtime->time_fixed = fw_bc3_fixed_from_float(time_seconds);
+    runtime->frame_fixed = fw_bc3_fixed_from_float((float)frame_counter);
+    runtime->y_only_params_cache_valid = false;
     fw_bc3_reset_value_slots(runtime->frame_values, FW_BC3_MAX_LET_SLOTS);
     fw_bc3_reset_value_slots(runtime->let_values, FW_BC3_MAX_LET_SLOTS);
 
     fw_bc3_inputs_t inputs = {
-        .time = runtime->time_seconds,
-        .frame = runtime->frame_counter,
-        .x = 0.0f,
-        .y = 0.0f,
-        .width = runtime->width,
-        .height = runtime->height,
+        .time = runtime->time_fixed,
+        .frame = runtime->frame_fixed,
+        .x = 0,
+        .y = 0,
+        .width = runtime->width_fixed,
+        .height = runtime->height_fixed,
     };
 
     fw_bc3_status_t status = fw_bc3_evaluate_params(runtime, &inputs, FW_BC3_PARAM_EVAL_STATIC_ONLY);
@@ -1529,19 +1898,33 @@ fw_bc3_status_t fw_bc3_runtime_eval_pixel(fw_bc3_runtime_t *runtime, float x, fl
         return FW_BC3_ERR_INVALID_ARG;
     }
 
+    const int32_t x_fixed = fw_bc3_fixed_from_float(x);
+    const int32_t y_fixed = fw_bc3_fixed_from_float(y);
     fw_bc3_inputs_t inputs = {
-        .time = runtime->time_seconds,
-        .frame = runtime->frame_counter,
-        .x = x,
-        .y = y,
-        .width = runtime->width,
-        .height = runtime->height,
+        .time = runtime->time_fixed,
+        .frame = runtime->frame_fixed,
+        .x = x_fixed,
+        .y = y_fixed,
+        .width = runtime->width_fixed,
+        .height = runtime->height_fixed,
     };
 
     if (runtime->has_dynamic_params) {
-        fw_bc3_status_t status = fw_bc3_evaluate_params(runtime, &inputs, FW_BC3_PARAM_EVAL_DYNAMIC_ONLY);
-        if (status != FW_BC3_OK) {
-            return status;
+        if (runtime->has_y_only_dynamic_params &&
+            (!runtime->y_only_params_cache_valid || runtime->y_only_params_cached_y != y_fixed)) {
+            fw_bc3_status_t status = fw_bc3_evaluate_params(runtime, &inputs, FW_BC3_PARAM_EVAL_DYNAMIC_Y_ONLY);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            runtime->y_only_params_cache_valid = true;
+            runtime->y_only_params_cached_y = y_fixed;
+        }
+
+        if (runtime->has_x_dynamic_params) {
+            fw_bc3_status_t status = fw_bc3_evaluate_params(runtime, &inputs, FW_BC3_PARAM_EVAL_DYNAMIC_X_ONLY);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
         }
     }
 

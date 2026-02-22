@@ -128,3 +128,48 @@ Recommended rollout:
 2. Keep Zig runtime/compiler host-side; do not block on full Zig-on-device.
 3. Add OTA rollback and network resilience early (before feature expansion).
 4. If speed-to-demo is critical, optionally prototype runtime semantics in ESPHome first, then migrate to IDF for production.
+
+---
+
+## ESP32 runtime optimization findings (implemented)
+
+### Measured baseline behavior
+- Complex shaders (for example `aurora-ribbons-classic`) showed very low on-device throughput.
+- Host-side v3 monitor telemetry reported slow-frame timings in the multi-hundred ms range, and in some regression cases above 1 second.
+
+### Optimizations that were implemented
+1. **Continuous shader render loop + diagnostics**
+   - Added persistent shader render task and slow-frame telemetry counters exposed via v3 query.
+2. **Fast trig approximation**
+   - Switched VM `sin/cos` builtins from libm calls to lightweight approximation.
+3. **Expression hot-path cleanup**
+   - Reduced scalar opcode overhead in expression eval (`negate/add/sub/mul/div`).
+4. **VM compile flags**
+   - Forced VM translation unit to build with `-O3` and math-focused optimization flags.
+5. **Dynamic param evaluation refinement**
+   - Added `x`/`y` dependency tracking and cached `y`-only dynamic params per row.
+6. **Runtime scheduling/power tuning**
+   - Disabled Wi-Fi power save and raised default CPU frequency target to 240 MHz.
+7. **Fixed-point scalar arithmetic (experiment)**
+   - VM scalar expression math is currently Q16.16 fixed-point for core scalar ops (`negate/add/sub/mul/div`), while builtin boundaries remain float.
+8. **Fixed-slot conversion reduction**
+   - Inputs and param cache are now stored/loaded as fixed-point scalars directly to avoid repeated float->fixed conversion in hot slot-load paths.
+9. **Fixed scalar builtin fast paths**
+   - Scalar-heavy builtins (`abs`, `floor`, `fract`, `min`, `max`, `clamp`) now execute directly in fixed-point without float conversion.
+10. **Spatially uniform frame fast path**
+   - Runtime now detects programs that do not depend on `x/y` in layer execution and renders a single VM pixel per frame, then fills the whole frame buffer with that color.
+11. **Frame pacing + unchanged uniform frame skip**
+   - Shader task now uses fixed-period scheduling (`vTaskDelayUntil`) so render cost does not add an extra full frame interval delay.
+   - For uniform shaders, repeated identical colors skip LED push entirely to avoid redundant output overhead on static frames.
+12. **LED output hot-path specialization**
+   - Added dedicated fast paths for RGB frame uploads and uniform RGB pushes to reduce per-pixel decode overhead in firmware output code.
+13. **Parallel segment RMT transmit**
+   - Updated `led_strip` RMT refresh path to enqueue transmit without per-segment blocking wait, allowing segment transmissions to overlap instead of serializing each segment refresh.
+
+### Regressions observed
+- A LUT-based `sin/cos` path regressed significantly on-device and was reverted.
+- One mapping-cache attempt caused startup `ESP_ERR_NO_MEM` and was reverted.
+
+### Current conclusion
+- The dominant cost for heavy shaders is still in per-pixel VM work (especially builtin-heavy expressions), not just transport or rendering I/O.
+- The dominant remaining win is reducing builtin-heavy work per pixel (compiler-side simplification/CSE/constant folding and cheaper builtin execution), because builtin boundaries still require float math.
