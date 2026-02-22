@@ -12,11 +12,17 @@
 static const char *TAG = "fw_ota";
 
 #if CONFIG_FW_OTA_ENABLED
+#ifdef CONFIG_FW_OTA_ALLOW_INSECURE
+#define FW_OTA_ALLOW_INSECURE_DEFAULT true
+#else
+#define FW_OTA_ALLOW_INSECURE_DEFAULT false
+#endif
+
 static const fw_ota_request_t FW_OTA_DEFAULT_REQUEST = {
     .url = CONFIG_FW_OTA_DEFAULT_URL,
     .cert_pem = NULL,
     .use_crt_bundle = CONFIG_FW_OTA_USE_CRT_BUNDLE,
-    .skip_cert_common_name_check = CONFIG_FW_OTA_ALLOW_INSECURE,
+    .skip_cert_common_name_check = FW_OTA_ALLOW_INSECURE_DEFAULT,
     .timeout_ms = CONFIG_FW_OTA_HTTP_TIMEOUT_MS,
 };
 

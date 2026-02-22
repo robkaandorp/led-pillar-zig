@@ -16,10 +16,19 @@
 #include "lwip/inet.h"
 
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "nvs.h"
+#include "sdkconfig.h"
 
 #include "fw_bytecode_vm.h"
 #include "fw_led_output.h"
+
+#ifdef CONFIG_FW_V12_REMAP_LOGICAL
+#define FW_V12_REMAP_LOGICAL true
+#else
+#define FW_V12_REMAP_LOGICAL false
+#endif
 
 #define FW_TCP_HEADER_LEN 10U
 #define FW_TCP_ACK_BYTE 0x06U
@@ -36,6 +45,7 @@
 #define FW_TCP_V3_CMD_SET_DEFAULT_HOOK 0x03U
 #define FW_TCP_V3_CMD_CLEAR_DEFAULT_HOOK 0x04U
 #define FW_TCP_V3_CMD_QUERY_DEFAULT_HOOK 0x05U
+#define FW_TCP_V3_CMD_UPLOAD_FIRMWARE 0x06U
 #define FW_TCP_V3_RESPONSE_FLAG 0x80U
 
 #define FW_TCP_V3_STATUS_OK 0U
@@ -165,6 +175,11 @@ static esp_err_t fw_tcp_blit_frame(fw_tcp_server_state_t *state, uint8_t bytes_p
     const size_t expected_len = (size_t)state->led_count * bytes_per_pixel;
     if (payload_len != expected_len || payload_len > state->frame_buffer_len) {
         return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (!FW_V12_REMAP_LOGICAL) {
+        memcpy(state->frame_buffer, payload, expected_len);
+        return ESP_OK;
     }
 
     uint32_t logical_index = 0;
@@ -461,6 +476,66 @@ static bool fw_tcp_handle_v3_message(int sock, fw_tcp_server_state_t *state, uin
     return fw_tcp_send_v3_response(sock, (uint8_t)(cmd | FW_TCP_V3_RESPONSE_FLAG), status, response_payload, response_len);
 }
 
+static uint8_t fw_tcp_handle_v3_firmware_upload_stream(int sock, fw_tcp_server_state_t *state, size_t payload_len) {
+    if (state == NULL || payload_len == 0U) {
+        return FW_TCP_V3_STATUS_INVALID_ARG;
+    }
+
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition == NULL) {
+        (void)fw_tcp_drain_bytes(sock, payload_len);
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+    if (payload_len > update_partition->size) {
+        (void)fw_tcp_drain_bytes(sock, payload_len);
+        ESP_LOGW(TAG, "firmware payload too large: %u > %u", (unsigned)payload_len, (unsigned)update_partition->size);
+        return FW_TCP_V3_STATUS_TOO_LARGE;
+    }
+
+    esp_ota_handle_t ota_handle = 0;
+    esp_err_t ota_err = esp_ota_begin(update_partition, payload_len, &ota_handle);
+    if (ota_err != ESP_OK) {
+        (void)fw_tcp_drain_bytes(sock, payload_len);
+        ESP_LOGW(TAG, "esp_ota_begin failed: %s", esp_err_to_name(ota_err));
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+
+    size_t remaining = payload_len;
+    while (remaining > 0U) {
+        const size_t chunk_len = (remaining < state->rx_buffer_len) ? remaining : state->rx_buffer_len;
+        if (!fw_tcp_recv_exact(sock, state->rx_buffer, chunk_len)) {
+            (void)esp_ota_abort(ota_handle);
+            return FW_TCP_V3_STATUS_INTERNAL;
+        }
+
+        ota_err = esp_ota_write(ota_handle, state->rx_buffer, chunk_len);
+        if (ota_err != ESP_OK) {
+            (void)esp_ota_abort(ota_handle);
+            if (remaining > chunk_len) {
+                (void)fw_tcp_drain_bytes(sock, remaining - chunk_len);
+            }
+            ESP_LOGW(TAG, "esp_ota_write failed: %s", esp_err_to_name(ota_err));
+            return FW_TCP_V3_STATUS_INTERNAL;
+        }
+        remaining -= chunk_len;
+    }
+
+    ota_err = esp_ota_end(ota_handle);
+    if (ota_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_ota_end failed: %s", esp_err_to_name(ota_err));
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+
+    ota_err = esp_ota_set_boot_partition(update_partition);
+    if (ota_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(ota_err));
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+
+    ESP_LOGI(TAG, "firmware upload complete (%u bytes), rebooting into new partition", (unsigned)payload_len);
+    return FW_TCP_V3_STATUS_OK;
+}
+
 static bool fw_tcp_handle_frame_message(
     int sock,
     fw_tcp_server_state_t *state,
@@ -560,6 +635,24 @@ static bool fw_tcp_client_loop(int client_sock, fw_tcp_server_state_t *state) {
             const uint32_t payload_len_u32 = fw_tcp_read_be_u32(&header[5]);
             const size_t payload_len = (size_t)payload_len_u32;
             const uint8_t cmd = header[9];
+            if (cmd == FW_TCP_V3_CMD_UPLOAD_FIRMWARE) {
+                const uint8_t status = fw_tcp_handle_v3_firmware_upload_stream(client_sock, state, payload_len);
+                if (!fw_tcp_send_v3_response(
+                        client_sock,
+                        (uint8_t)(cmd | FW_TCP_V3_RESPONSE_FLAG),
+                        status,
+                        NULL,
+                        0U
+                    )) {
+                    return false;
+                }
+                if (status == FW_TCP_V3_STATUS_OK) {
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    esp_restart();
+                    return false;
+                }
+                continue;
+            }
             if (payload_len > state->rx_buffer_len) {
                 if (!fw_tcp_drain_bytes(client_sock, payload_len)) {
                     return false;

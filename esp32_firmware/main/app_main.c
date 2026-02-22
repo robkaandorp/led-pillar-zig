@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "mdns.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
@@ -13,9 +14,8 @@
 #include "ota_hooks.h"
 
 static const char *TAG = "fw_main";
-static const char *FW_WIFI_SSID = "YOUR_WIFI_SSID";
-static const char *FW_WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 static fw_led_layout_config_t g_fw_layout = {0};
+static esp_netif_t *g_fw_sta_netif = NULL;
 
 static void fw_init_nvs(void) {
     esp_err_t ret = nvs_flash_init();
@@ -29,7 +29,27 @@ static void fw_init_nvs(void) {
 static void fw_init_network(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    g_fw_sta_netif = esp_netif_create_default_wifi_sta();
+    ESP_ERROR_CHECK(g_fw_sta_netif != NULL ? ESP_OK : ESP_FAIL);
+}
+
+static void fw_init_hostname_and_mdns(void) {
+    const char *hostname = CONFIG_FW_HOSTNAME;
+    if (hostname[0] != '\0') {
+        ESP_ERROR_CHECK(esp_netif_set_hostname(g_fw_sta_netif, hostname));
+        ESP_LOGI(TAG, "hostname set to %s", hostname);
+    } else {
+        ESP_LOGW(TAG, "CONFIG_FW_HOSTNAME is empty; hostname not set");
+    }
+
+#if CONFIG_FW_MDNS_ENABLED
+    ESP_ERROR_CHECK(mdns_init());
+    const char *mdns_hostname = hostname[0] != '\0' ? hostname : "led-pillar";
+    ESP_ERROR_CHECK(mdns_hostname_set(mdns_hostname));
+    ESP_ERROR_CHECK(mdns_instance_name_set("LED Pillar"));
+    ESP_ERROR_CHECK(mdns_service_add(NULL, "_ledpillar", "_tcp", FW_TCP_DEFAULT_PORT, NULL, 0));
+    ESP_LOGI(TAG, "mDNS enabled at %s.local", mdns_hostname);
+#endif
 }
 
 static void fw_init_wifi_sta(void) {
@@ -39,13 +59,17 @@ static void fw_init_wifi_sta(void) {
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
-    strlcpy((char *)wifi_config.sta.ssid, FW_WIFI_SSID, sizeof(wifi_config.sta.ssid));
-    strlcpy((char *)wifi_config.sta.password, FW_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
+    strlcpy((char *)wifi_config.sta.ssid, CONFIG_FW_WIFI_SSID, sizeof(wifi_config.sta.ssid));
+    strlcpy((char *)wifi_config.sta.password, CONFIG_FW_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    if (CONFIG_FW_WIFI_SSID[0] == '\0') {
+        ESP_LOGW(TAG, "CONFIG_FW_WIFI_SSID is empty; WiFi connect skipped");
+        return;
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_LOGI(TAG, "WiFi station init complete (connection attempt is best-effort)");
     (void)esp_wifi_connect();
 }
@@ -87,6 +111,7 @@ void app_main(void) {
     fw_init_nvs();
     fw_init_led_layout();
     fw_init_network();
+    fw_init_hostname_and_mdns();
     fw_init_wifi_sta();
     ESP_ERROR_CHECK(fw_tcp_server_start(&g_fw_layout, FW_TCP_DEFAULT_PORT));
     fw_ota_init();

@@ -1,14 +1,45 @@
 #include "fw_led_output.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "esp_log.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "fw_led_out";
+
+#ifdef CONFIG_FW_LED_GAMMA_X100
+#define FW_LED_GAMMA_X100_DEFAULT CONFIG_FW_LED_GAMMA_X100
+#else
+#define FW_LED_GAMMA_X100_DEFAULT 280
+#endif
 
 static uint8_t fw_led_saturating_add(uint8_t lhs, uint8_t rhs) {
     const uint16_t sum = (uint16_t)lhs + (uint16_t)rhs;
     return (sum > UINT8_MAX) ? UINT8_MAX : (uint8_t)sum;
+}
+
+static void fw_led_build_gamma_lut(fw_led_output_t *driver, uint16_t gamma_x100) {
+    driver->gamma_x100 = gamma_x100;
+    if (gamma_x100 == 100U) {
+        for (uint16_t i = 0; i < 256U; i += 1U) {
+            driver->gamma_lut[i] = (uint8_t)i;
+        }
+        return;
+    }
+
+    const float gamma = (float)gamma_x100 / 100.0f;
+    for (uint16_t i = 0; i < 256U; i += 1U) {
+        const float normalized = (float)i / 255.0f;
+        const float corrected = powf(normalized, gamma);
+        int corrected_u8 = (int)lroundf(corrected * 255.0f);
+        if (corrected_u8 < 0) {
+            corrected_u8 = 0;
+        } else if (corrected_u8 > 255) {
+            corrected_u8 = 255;
+        }
+        driver->gamma_lut[i] = (uint8_t)corrected_u8;
+    }
 }
 
 static void fw_led_unpack_pixel(uint8_t pixel_format, const uint8_t *pixel, uint8_t *r, uint8_t *g, uint8_t *b, uint8_t *w) {
@@ -60,6 +91,7 @@ esp_err_t fw_led_output_init(fw_led_output_t *driver, const fw_led_layout_config
 
     memset(driver, 0, sizeof(*driver));
     driver->layout = *layout;
+    fw_led_build_gamma_lut(driver, FW_LED_GAMMA_X100_DEFAULT);
 
     uint8_t segment = 0U;
     while (segment < driver->layout.segment_count) {
@@ -96,6 +128,7 @@ esp_err_t fw_led_output_init(fw_led_output_t *driver, const fw_led_layout_config
     }
 
     driver->initialized = true;
+    ESP_LOGI(TAG, "gamma correction configured: %u.%02u", driver->gamma_x100 / 100U, driver->gamma_x100 % 100U);
     return ESP_OK;
 }
 
@@ -165,6 +198,9 @@ esp_err_t fw_led_output_push_frame(
                 g = fw_led_saturating_add(g, w);
                 b = fw_led_saturating_add(b, w);
             }
+            r = driver->gamma_lut[r];
+            g = driver->gamma_lut[g];
+            b = driver->gamma_lut[b];
 
             esp_err_t set_err = led_strip_set_pixel(strip, led_index, r, g, b);
             if (set_err != ESP_OK) {

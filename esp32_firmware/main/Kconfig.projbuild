@@ -1,5 +1,36 @@
 menu "LED Pillar Firmware"
 
+config FW_WIFI_SSID
+    string "WiFi SSID"
+    default ""
+
+config FW_WIFI_PASSWORD
+    string "WiFi password"
+    default ""
+
+config FW_HOSTNAME
+    string "Device hostname"
+    default "led-pillar"
+
+config FW_MDNS_ENABLED
+    bool "Enable mDNS advertisement"
+    default y
+
+config FW_V12_REMAP_LOGICAL
+    bool "Remap v1/v2 frame payload from logical order"
+    default n
+    help
+        Enable this only when incoming v1/v2 frame payload is in logical XY order.
+        Keep disabled when sender already emits physical serpentine order.
+
+config FW_LED_GAMMA_X100
+    int "LED output gamma x100"
+    range 10 500
+    default 280
+    help
+        Gamma correction as gamma*100 for LED output. Examples:
+        100 = 1.0 (no correction), 220 = 2.2, 280 = 2.8.
+
 config FW_OTA_ENABLED
     bool "Enable wireless HTTPS OTA support"
     default y

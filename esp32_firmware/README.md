@@ -26,9 +26,14 @@ From this directory:
 
 ```bash
 idf.py set-target esp32
+idf.py menuconfig
 idf.py build
 idf.py -p <serial-port> flash monitor
 ```
+
+Set credentials in `menuconfig` under `LED Pillar Firmware -> WiFi SSID / WiFi password`.
+Set hostname/mDNS in `menuconfig` under `LED Pillar Firmware -> Device hostname / Enable mDNS advertisement`.
+Set gamma correction in `menuconfig` under `LED Pillar Firmware -> LED output gamma x100` (default `280` = gamma `2.8`).
 
 Common monitor exit: `Ctrl+]`.
 
@@ -63,6 +68,7 @@ Configurable properties:
 - **Per-segment LED counts**: `segments[i].led_count`
 - **Serpentine mapping toggle**: `serpentine_columns`
 - **Logical dimensions**: `width`, `height`
+- **Output gamma correction**: `CONFIG_FW_LED_GAMMA_X100` (default `280`)
 
 Validation/safety checks enforce:
 
@@ -77,6 +83,7 @@ RMT output behavior (`fw_led_output`):
 - Uses `led_strip_rmt_config_t.resolution_hz = 10_000_000`.
 - Clears strips on init/deinit and refreshes each segment per frame.
 - Supports RGB/RGBW/GRB/GRBW/BGR input encodings; for 4-byte formats, W is added into RGB with saturation before output.
+- Applies configurable gamma correction through a 256-entry LUT before writing RGB values to the strip.
 
 ## Protocol support summary
 
@@ -84,13 +91,15 @@ All messages start with `LEDS` magic and version byte.
 
 - **v1 (`0x01`)**: frame stream; no ACK.
 - **v2 (`0x02`)**: frame stream; sends per-frame ACK byte `0x06`.
-- **v3 (`0x03`)**: control channel for bytecode upload/activation/default-hook management.
+- **v3 (`0x03`)**: control channel for bytecode upload/activation/default-hook management and push OTA firmware upload.
 
 ### v1/v2 frame behavior
 
 - Header encodes pixel count + pixel format.
 - Supported pixel formats map to 3 or 4 bytes/pixel.
-- Payload is remapped from logical order to physical segmented-serpentine order before output buffering.
+- Payload remapping is configurable:
+  - default (`CONFIG_FW_V12_REMAP_LOGICAL=n`): payload is treated as already physical order.
+  - enabled (`CONFIG_FW_V12_REMAP_LOGICAL=y`): payload is remapped from logical order to physical segmented-serpentine order.
 - Size/overflow guards reject mismatched or oversized frames.
 
 ### v3 bytecode/control behavior
@@ -102,6 +111,7 @@ Supported commands:
 - `0x03` set default shader hook (persist to NVS)
 - `0x04` clear default shader hook (erase from NVS)
 - `0x05` query hook/upload/active/fault state (+ persisted blob size)
+- `0x06` upload and apply firmware image (raw app `.bin` bytes streamed in payload; device reboots on success)
 
 Responses use command|`0x80` with status byte (`OK`, `INVALID_ARG`, `UNSUPPORTED_CMD`, `TOO_LARGE`, `NOT_READY`, `VM_ERROR`, `INTERNAL`).
 
@@ -117,8 +127,10 @@ Default shader persistence behavior:
 ## Practical notes / limitations
 
 - TCP server is **single-client at a time** (accept loop handles one connection, then returns to listen).
-- v1/v2 frames are mapped into physical segment order and pushed to hardware through ESP-IDF `led_strip` (RMT) drivers (one driver instance per configured segment GPIO/length).
-- OTA trigger is firmware-internal API only (no dedicated TCP protocol command yet).
+- v1/v2 frames are pushed to hardware through ESP-IDF `led_strip` (RMT) drivers; optional logical->physical remap is controlled by `CONFIG_FW_V12_REMAP_LOGICAL` (default off).
+- OTA can be triggered via v3 push upload command (`0x06`) without an HTTPS URL.
 - OTA call is synchronous in caller context; successful OTA reboots immediately.
-- Wi-Fi credentials are currently hardcoded placeholders in `app_main.c` (`YOUR_WIFI_SSID` / `YOUR_WIFI_PASSWORD`).
+- Wi-Fi credentials come from `CONFIG_FW_WIFI_SSID` / `CONFIG_FW_WIFI_PASSWORD` (local `sdkconfig`); `sdkconfig` is gitignored to reduce credential leak risk.
+- Hostname comes from `CONFIG_FW_HOSTNAME` (default `led-pillar`) and mDNS can be toggled with `CONFIG_FW_MDNS_ENABLED`.
+- With mDNS enabled, the firmware advertises `_ledpillar._tcp` and is reachable at `<hostname>.local:7777`.
 - Resource/safety bounds are explicit (fixed-size buffers, bytecode cap, mapping validation, payload checks).
