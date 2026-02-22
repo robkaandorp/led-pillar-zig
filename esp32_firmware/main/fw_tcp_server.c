@@ -484,7 +484,8 @@ static uint8_t fw_tcp_handle_v3_firmware_upload_stream(int sock, fw_tcp_server_s
     const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
     if (update_partition == NULL) {
         (void)fw_tcp_drain_bytes(sock, payload_len);
-        return FW_TCP_V3_STATUS_INTERNAL;
+        ESP_LOGW(TAG, "no OTA update partition available; enable OTA partition table");
+        return FW_TCP_V3_STATUS_NOT_READY;
     }
     if (payload_len > update_partition->size) {
         (void)fw_tcp_drain_bytes(sock, payload_len);

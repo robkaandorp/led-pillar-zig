@@ -63,6 +63,7 @@ https://github.com/robkaandorp/tcp_led_stream
   - `infinite-line [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
   - `infinite-lines [line_count] [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
   - `dsl-file <path-to-effect.dsl>` (also writes compiled reference bytecode to `bytecode/<dsl-name>.bin`)
+  - `firmware-upload <path-to-led_pillar_firmware.bin>` (protocol v3 push OTA upload command)
 - On normal exit or `Ctrl+C`, the sender clears the LED display to black before disconnecting.
 - Run console TCP display simulator: `zig build simulator -- [port]`
 - The simulator renders the matrix and prints live stats (FPS, bytes/s, total frames, total bytes) below it.

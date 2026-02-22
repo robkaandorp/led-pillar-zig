@@ -113,6 +113,9 @@ Supported commands:
 - `0x05` query hook/upload/active/fault state (+ persisted blob size)
 - `0x06` upload and apply firmware image (raw app `.bin` bytes streamed in payload; device reboots on success)
 
+For `0x06` push OTA, firmware must be built/flashed with an OTA partition table (`CONFIG_PARTITION_TABLE_TWO_OTA=y`).
+If the device was flashed earlier with single-app partitions, do one USB flash first so bootloader+partition table are updated.
+
 Responses use command|`0x80` with status byte (`OK`, `INVALID_ARG`, `UNSUPPORTED_CMD`, `TOO_LARGE`, `NOT_READY`, `VM_ERROR`, `INTERNAL`).
 
 `QUERY_DEFAULT_HOOK (0x05)` response payload is 8 bytes:

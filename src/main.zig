@@ -15,6 +15,7 @@ const EffectKind = enum {
     infinite_line,
     infinite_lines,
     dsl_file,
+    firmware_upload,
 };
 
 const RunConfig = struct {
@@ -28,7 +29,12 @@ const RunConfig = struct {
     infinite_color_transition_seconds: u16 = 10,
     infinite_line_width_pixels: u16 = 1,
     dsl_file_path: ?[]const u8 = null,
+    firmware_file_path: ?[]const u8 = null,
 };
+
+const v3_protocol_version: u8 = 0x03;
+const v3_cmd_upload_firmware: u8 = 0x06;
+const v3_response_flag: u8 = 0x80;
 
 pub fn main() !void {
     shutdown_requested.store(false, .seq_cst);
@@ -56,6 +62,14 @@ pub fn main() !void {
     defer args.deinit();
 
     const run_config = try parseRunConfig(&args);
+    if (run_config.effect == .firmware_upload) {
+        try runFirmwareUpload(
+            run_config.host,
+            run_config.port,
+            run_config.firmware_file_path orelse return error.MissingFirmwarePath,
+        );
+        return;
+    }
 
     var client = try led.TcpClient.init(std.heap.page_allocator, .{
         .host = run_config.host,
@@ -124,7 +138,95 @@ pub fn main() !void {
             run_config.dsl_file_path orelse return error.MissingDslPath,
             &shutdown_requested,
         ),
+        .firmware_upload => unreachable,
     }
+}
+
+fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8) !void {
+    std.debug.print("Preparing firmware upload...\n", .{});
+    var firmware_file = try std.fs.cwd().openFile(firmware_file_path, .{});
+    defer firmware_file.close();
+    const firmware_stat = try firmware_file.stat();
+    if (firmware_stat.size == 0 or firmware_stat.size > std.math.maxInt(u32)) return error.InvalidFirmwareSize;
+    const payload_len: u32 = @intCast(firmware_stat.size);
+    const payload_len_usize: usize = @intCast(payload_len);
+
+    std.debug.print("Firmware file: {s}\n", .{firmware_file_path});
+    std.debug.print("Payload size: {d} bytes\n", .{payload_len});
+    std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
+    var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
+    defer stream.close();
+    std.debug.print("Connected.\n", .{});
+
+    var header: [led.tcp_client.header_len]u8 = undefined;
+    header[0] = 'L';
+    header[1] = 'E';
+    header[2] = 'D';
+    header[3] = 'S';
+    header[4] = v3_protocol_version;
+    header[5] = @as(u8, @intCast((payload_len >> 24) & 0xff));
+    header[6] = @as(u8, @intCast((payload_len >> 16) & 0xff));
+    header[7] = @as(u8, @intCast((payload_len >> 8) & 0xff));
+    header[8] = @as(u8, @intCast(payload_len & 0xff));
+    header[9] = v3_cmd_upload_firmware;
+    std.debug.print("Sending v3 upload header (cmd=0x06)...\n", .{});
+    try stream.writeAll(&header);
+
+    var upload_timer = try std.time.Timer.start();
+    var send_buf: [16 * 1024]u8 = undefined;
+    var sent_total: usize = 0;
+    var next_progress_percent: usize = 10;
+    std.debug.print("Streaming firmware payload...\n", .{});
+    while (true) {
+        const read_len = try firmware_file.read(send_buf[0..]);
+        if (read_len == 0) break;
+        try stream.writeAll(send_buf[0..read_len]);
+        sent_total += read_len;
+        if (payload_len_usize > 0) {
+            const sent_percent = (sent_total * 100) / payload_len_usize;
+            while (sent_percent >= next_progress_percent and next_progress_percent <= 100) : (next_progress_percent += 10) {
+                std.debug.print("  {d}% ({d}/{d} bytes)\n", .{ next_progress_percent, sent_total, payload_len_usize });
+            }
+        }
+    }
+    if (sent_total != payload_len_usize) return error.InvalidFirmwareSize;
+    const upload_elapsed_ns = upload_timer.read();
+    if (upload_elapsed_ns > 0) {
+        const bytes_per_sec = (@as(u64, @intCast(sent_total)) * std.time.ns_per_s) / upload_elapsed_ns;
+        std.debug.print("Upload finished in {d} ms ({d} bytes/s).\n", .{ upload_elapsed_ns / std.time.ns_per_ms, bytes_per_sec });
+    } else {
+        std.debug.print("Upload finished.\n", .{});
+    }
+
+    std.debug.print("Waiting for v3 response...\n", .{});
+    var response_header: [led.tcp_client.header_len]u8 = undefined;
+    try readStreamExact(&stream, response_header[0..]);
+    if (!std.mem.eql(u8, response_header[0..4], "LEDS")) return error.InvalidV3Response;
+    if (response_header[4] != v3_protocol_version) return error.InvalidV3Response;
+    if (response_header[9] != (v3_cmd_upload_firmware | v3_response_flag)) return error.InvalidV3Response;
+
+    const response_payload_len = readBeU32(response_header[5..9]);
+    if (response_payload_len < 1) return error.InvalidV3Response;
+    std.debug.print("Received v3 response header: payload_len={d}\n", .{response_payload_len});
+
+    var status_byte: [1]u8 = undefined;
+    try readStreamExact(&stream, status_byte[0..]);
+    if (response_payload_len > 1) {
+        try drainStream(&stream, response_payload_len - 1);
+    }
+
+    if (status_byte[0] != 0) {
+        std.debug.print("Firmware upload failed: v3 status={d} ({s})\n", .{ status_byte[0], v3StatusName(status_byte[0]) });
+        if (status_byte[0] == 4) {
+            std.debug.print(
+                "Hint: device OTA partition table not ready; flash once over USB with CONFIG_PARTITION_TABLE_TWO_OTA enabled.\n",
+                .{},
+            );
+        }
+        return error.V3CommandFailed;
+    }
+
+    std.debug.print("Firmware upload accepted (status=OK); device should reboot into the new image.\n", .{});
 }
 
 fn clearDisplayOnExit(client: *led.TcpClient, display: *led.DisplayBuffer) !void {
@@ -333,6 +435,10 @@ fn parseRunConfig(args: anytype) !RunConfig {
             run_config.dsl_file_path = args.next() orelse return error.MissingDslPath;
             if (args.next() != null) return error.TooManyArguments;
         },
+        .firmware_upload => {
+            run_config.firmware_file_path = args.next() orelse return error.MissingFirmwarePath;
+            if (args.next() != null) return error.TooManyArguments;
+        },
     }
 
     return run_config;
@@ -349,7 +455,45 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
     if (std.mem.eql(u8, effect_arg, "infinite-line")) return .infinite_line;
     if (std.mem.eql(u8, effect_arg, "infinite-lines")) return .infinite_lines;
     if (std.mem.eql(u8, effect_arg, "dsl-file")) return .dsl_file;
+    if (std.mem.eql(u8, effect_arg, "firmware-upload")) return .firmware_upload;
     return error.UnknownEffect;
+}
+
+fn readStreamExact(stream: *std.net.Stream, buffer: []u8) !void {
+    var offset: usize = 0;
+    while (offset < buffer.len) {
+        const read_len = try stream.read(buffer[offset..]);
+        if (read_len == 0) return error.EndOfStream;
+        offset += read_len;
+    }
+}
+
+fn drainStream(stream: *std.net.Stream, len: u32) !void {
+    var remaining = len;
+    var scratch: [256]u8 = undefined;
+    while (remaining > 0) {
+        const chunk_u32 = @min(remaining, @as(u32, scratch.len));
+        const chunk: usize = @intCast(chunk_u32);
+        try readStreamExact(stream, scratch[0..chunk]);
+        remaining -= chunk_u32;
+    }
+}
+
+fn readBeU32(bytes: []const u8) u32 {
+    return (@as(u32, bytes[0]) << 24) | (@as(u32, bytes[1]) << 16) | (@as(u32, bytes[2]) << 8) | @as(u32, bytes[3]);
+}
+
+fn v3StatusName(status: u8) []const u8 {
+    return switch (status) {
+        0 => "OK",
+        1 => "INVALID_ARG",
+        2 => "UNSUPPORTED_CMD",
+        3 => "TOO_LARGE",
+        4 => "NOT_READY",
+        5 => "VM_ERROR",
+        6 => "INTERNAL",
+        else => "UNKNOWN",
+    };
 }
 
 fn parseMaybeU16(arg: []const u8) !?u16 {
@@ -370,6 +514,7 @@ test "parseEffectKind accepts known effect names" {
     try std.testing.expectEqual(.infinite_line, try parseEffectKind("infinite-line"));
     try std.testing.expectEqual(.infinite_lines, try parseEffectKind("infinite-lines"));
     try std.testing.expectEqual(.dsl_file, try parseEffectKind("dsl-file"));
+    try std.testing.expectEqual(.firmware_upload, try parseEffectKind("firmware-upload"));
 }
 
 test "parseMaybeU16 returns null for non-numeric strings" {
@@ -410,4 +555,20 @@ test "parseRunConfig dsl-file rejects extra args" {
         .values = &[_][]const u8{ "led-pillar-zig", "127.0.0.1", "dsl-file", "effect.dsl", "extra" },
     };
     try std.testing.expectError(error.TooManyArguments, parseRunConfig(&args));
+}
+
+test "parseRunConfig parses firmware-upload mode" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "firmware-upload", "esp32_firmware/build/led_pillar_firmware.bin" },
+    };
+    const run_config = try parseRunConfig(&args);
+    try std.testing.expectEqual(.firmware_upload, run_config.effect);
+    try std.testing.expectEqualStrings("esp32_firmware/build/led_pillar_firmware.bin", run_config.firmware_file_path.?);
+}
+
+test "parseRunConfig firmware-upload requires path" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "firmware-upload" },
+    };
+    try std.testing.expectError(error.MissingFirmwarePath, parseRunConfig(&args));
 }
