@@ -133,6 +133,8 @@ Default shader persistence behavior:
 - v1/v2 frames are pushed to hardware through ESP-IDF `led_strip` (RMT) drivers; optional logical->physical remap is controlled by `CONFIG_FW_V12_REMAP_LOGICAL` (default off).
 - OTA can be triggered via v3 push upload command (`0x06`) without an HTTPS URL.
 - OTA call is synchronous in caller context; successful OTA reboots immediately.
+- On boot, firmware runs a startup LED sequence before entering normal operation:
+  1) full red, green, blue (0.5s each), 2) full white (1s), 3) full off.
 - Wi-Fi credentials come from `CONFIG_FW_WIFI_SSID` / `CONFIG_FW_WIFI_PASSWORD` (local `sdkconfig`); `sdkconfig` is gitignored to reduce credential leak risk.
 - Hostname comes from `CONFIG_FW_HOSTNAME` (default `led-pillar`) and mDNS can be toggled with `CONFIG_FW_MDNS_ENABLED`.
 - With mDNS enabled, the firmware advertises `_ledpillar._tcp` and is reachable at `<hostname>.local:7777`.

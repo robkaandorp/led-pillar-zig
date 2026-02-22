@@ -60,6 +60,8 @@
 #define FW_TCP_NVS_NAMESPACE "fw_shader"
 #define FW_TCP_NVS_KEY_DEFAULT_SHADER "default_bc3"
 #define FW_TCP_V3_STATUS_PAYLOAD_LEN 8U
+#define FW_STARTUP_RGB_STEP_MS 500U
+#define FW_STARTUP_WHITE_MS 1000U
 
 typedef struct {
     bool started;
@@ -223,6 +225,54 @@ static bool fw_tcp_send_v3_response(int sock, uint8_t response_type, uint8_t sta
         }
     }
     return true;
+}
+
+static esp_err_t fw_tcp_show_startup_color(fw_tcp_server_state_t *state, uint8_t r, uint8_t g, uint8_t b, uint32_t hold_ms) {
+    if (state == NULL || state->frame_buffer == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const size_t bytes_per_pixel = 3U;
+    const size_t required_len = (size_t)state->led_count * bytes_per_pixel;
+    if (required_len > state->frame_buffer_len) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (uint32_t i = 0; i < state->led_count; i += 1U) {
+        const size_t offset = (size_t)i * bytes_per_pixel;
+        state->frame_buffer[offset] = r;
+        state->frame_buffer[offset + 1U] = g;
+        state->frame_buffer[offset + 2U] = b;
+    }
+
+    esp_err_t err = fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (hold_ms > 0U) {
+        vTaskDelay(pdMS_TO_TICKS(hold_ms));
+    }
+    return ESP_OK;
+}
+
+static esp_err_t fw_tcp_show_startup_sequence(fw_tcp_server_state_t *state) {
+    esp_err_t err = fw_tcp_show_startup_color(state, 255U, 0U, 0U, FW_STARTUP_RGB_STEP_MS);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = fw_tcp_show_startup_color(state, 0U, 255U, 0U, FW_STARTUP_RGB_STEP_MS);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = fw_tcp_show_startup_color(state, 0U, 0U, 255U, FW_STARTUP_RGB_STEP_MS);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = fw_tcp_show_startup_color(state, 255U, 255U, 255U, FW_STARTUP_WHITE_MS);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return fw_tcp_show_startup_color(state, 0U, 0U, 0U, 0U);
 }
 
 static esp_err_t fw_tcp_clear_persisted_default_shader(void) {
@@ -792,6 +842,16 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
         free(g_fw_tcp_server.bytecode_blob);
         memset(&g_fw_tcp_server, 0, sizeof(g_fw_tcp_server));
         return led_output_err;
+    }
+
+    esp_err_t startup_err = fw_tcp_show_startup_sequence(&g_fw_tcp_server);
+    if (startup_err != ESP_OK) {
+        fw_led_output_deinit(&g_fw_tcp_server.led_output);
+        free(g_fw_tcp_server.frame_buffer);
+        free(g_fw_tcp_server.rx_buffer);
+        free(g_fw_tcp_server.bytecode_blob);
+        memset(&g_fw_tcp_server, 0, sizeof(g_fw_tcp_server));
+        return startup_err;
     }
 
     esp_err_t default_shader_err = fw_tcp_load_persisted_default_shader(&g_fw_tcp_server);
