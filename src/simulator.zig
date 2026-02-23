@@ -330,6 +330,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
     var frame_counter: u32 = 0;
     var was_rendering = false;
     var clear_screen = true;
+    var next_deadline_ns: u64 = timer.read() + shader_frame_interval_ns;
 
     while (!context.stop_flag.load(.seq_cst)) {
         const frame_start_ns = timer.read();
@@ -402,12 +403,18 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
             was_rendering = false;
         }
 
-        const loop_elapsed_ns = timer.read() - frame_start_ns;
-        if (loop_elapsed_ns < shader_frame_interval_ns) {
-            std.Thread.sleep(shader_frame_interval_ns - loop_elapsed_ns);
+        // Use absolute deadline timing to avoid Windows sleep granularity drift.
+        // Relative timing (sleep(interval - elapsed)) loses time because Windows
+        // sleep rounds up to ~15.6ms timer resolution, reducing FPS to ~30.
+        // Absolute deadlines self-correct: overshoot in one frame shortens the
+        // next sleep, maintaining the target FPS on average.
+        const now_ns = timer.read();
+        if (now_ns < next_deadline_ns) {
+            std.Thread.sleep(next_deadline_ns - now_ns);
         } else {
             std.Thread.yield() catch {};
         }
+        next_deadline_ns += shader_frame_interval_ns;
     }
 }
 
