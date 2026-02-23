@@ -15,6 +15,7 @@ It boots Wi-Fi STA mode, starts the TCP LED protocol server on port `7777`, driv
 - `main/app_main.c`: boot flow (NVS, Wi-Fi, layout init, OTA hook init, TCP server start).
 - `main/fw_led_config.{h,c}`: LED layout config + logical-to-physical mapping (segments + serpentine columns).
 - `main/fw_led_output.{h,c}`: segmented `led_strip` output driver (RMT devices, per-segment refresh, pixel format unpacking).
+- `main/fw_native_shader.{h,c}`: native C shader wrapper with fast math approximations and render_frame API.
 - `main/fw_tcp_server.{h,c}`: TCP protocol server (v1/v2 frames + v3 bytecode/control messages + NVS persistence).
 - `main/fw_bytecode_vm.{h,c}`: BC3/v3 bytecode loader/runtime and safety limits.
 - `main/ota_hooks.{h,c}`: HTTPS OTA helpers (rollback validity confirmation + URL-triggered update API).
@@ -119,6 +120,8 @@ Supported commands:
 Native shader source wiring:
 
 - Firmware compiles `main/generated/dsl_shader_generated.c` through `main/fw_native_shader.c`.
+- `fw_native_shader.c` provides fast math approximations (`dsl_fast_sinf`, `dsl_fast_cosf`, `dsl_fast_sqrtf`, `dsl_fast_floorf`) and `#define` redirects that intercept standard math calls inside the generated shader.
+- `fw_native_shader_render_frame()` runs the full pixel loop with serpentine mapping and is compiled with `__attribute__((flatten))` for maximum inlining.
 - Host DSL flows (`dsl-file` / DSL `bytecode-upload`) overwrite that generated file automatically.
 - After generating, a normal firmware build+flash is enough to run it via v3 command `0x07`.
 
@@ -135,6 +138,51 @@ Default shader persistence behavior:
 - Persisted in NVS namespace/key: `fw_shader/default_bc3`.
 - On boot, firmware attempts to load and activate persisted shader automatically.
 - If persisted shader is invalid/corrupt or fails VM init, it is cleared from NVS and flagged as faulted.
+
+## Native shader performance
+
+The native C shader path compiles the DSL-generated C code into the firmware
+binary and executes it directly on the ESP32 at 240 MHz. The aurora-ribbons
+shader evaluates ~43,200 `sinf` and ~9,600 `sqrtf` calls per frame (1,200
+pixels × 4 layers × 9 sin per layer).
+
+### Optimization summary
+
+| Optimization | FPS | Compute (µs) | Key change |
+|---|---|---|---|
+| Baseline (no flags) | 9–10 | ~100,000 | Library sinf/cosf/sqrtf |
+| `-O3 -ffast-math` | 13.5 | ~74,000 | Compiler optimizations |
+| Fast sin/cos/sqrt + async LED | 25 | ~40,000 | Parabolic sin, Quake sqrt, overlapped TX |
+| Core 1 pinning + render_frame | 33 | ~29,500 | Full inlining, WiFi isolation |
+| Microsecond deadline timing | 34 | ~29,000 | Precise frame intervals |
+| **Inline fast floorf** | **40** | **14,700** | **Cast-based floor replaces newlib** |
+
+### Key findings
+
+- **`floorf` was the single biggest bottleneck.** On ESP32 Xtensa with GCC 14.2,
+  even with `-ffast-math -O3`, `floorf()` routes through newlib's software
+  `sf_floor.c` (~50–100 cycles per call). Replacing it with
+  `(float)(int)x + correction` compiles to 3–4 instructions and halved
+  compute time.
+- **Async LED output** hides the 12 ms WS2812B transmission time (400 LEDs ×
+  3 segments × 30 µs/LED) behind the next frame's shader compute via
+  double-buffered ping-pong.
+- **Core 1 pinning** (`xTaskCreatePinnedToCore`) isolates the shader from
+  WiFi interrupts on core 0. A minimum 1-tick `vTaskDelay` ensures the
+  IDLE1 task runs and the watchdog timer stays fed.
+- **`__attribute__((flatten))`** on `fw_native_shader_render_frame` forces
+  the compiler to inline `dsl_shader_eval_pixel` and all fast-math helpers
+  into a single function, eliminating call overhead for 1,200 pixels/frame.
+- Fast math approximations (`fw_native_shader.c`):
+  - `dsl_fast_sinf`: parabolic with correction, max |error| < 0.001.
+  - `dsl_fast_sqrtf`: Quake inverse-sqrt + Newton–Raphson, max relative error ≈ 0.03%.
+  - `dsl_fast_cosf`: sin(x + π/2).
+
+### Timing breakdown (at 40 FPS)
+
+- Shader compute: ~14,700 µs (97% of active frame time)
+- LED push (async): ~391 µs (overlap with next frame)
+- Frame budget: 25,000 µs (25 ms at 40 FPS)
 
 ## Practical notes / limitations
 

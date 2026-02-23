@@ -525,10 +525,6 @@ esp_err_t fw_led_output_push_frame(
     if (tx_err != ESP_OK) {
         return tx_err;
     }
-    esp_err_t done_err = fw_led_output_wait_pending(driver);
-    if (done_err != ESP_OK) {
-        return done_err;
-    }
 
     driver->next_slot = (uint8_t)(slot ^ 1U);
     return ESP_OK;
@@ -559,10 +555,6 @@ esp_err_t fw_led_output_push_uniform_rgb(fw_led_output_t *driver, uint8_t r, uin
     esp_err_t tx_err = fw_led_output_transmit_slot(driver, slot);
     if (tx_err != ESP_OK) {
         return tx_err;
-    }
-    esp_err_t done_err = fw_led_output_wait_pending(driver);
-    if (done_err != ESP_OK) {
-        return done_err;
     }
 
     driver->next_slot = (uint8_t)(slot ^ 1U);

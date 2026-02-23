@@ -22,6 +22,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_task_wdt.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -329,41 +330,17 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
 
     state->uniform_last_color_valid = false;
 
-    uint32_t logical_index = 0U;
-    for (uint16_t y = 0; y < state->layout.height; y += 1U) {
-        for (uint16_t x = 0; x < state->layout.width; x += 1U) {
-            fw_native_shader_color_t color = {0};
-            fw_native_shader_eval_pixel(
-                time_seconds,
-                (float)frame_counter,
-                (float)x,
-                (float)y,
-                (float)state->layout.width,
-                (float)state->layout.height,
-                &color
-            );
-            if (logical_index >= state->led_count) {
-                return ESP_ERR_INVALID_SIZE;
-            }
-
-            uint16_t mapped_y = y;
-            if (state->layout.serpentine_columns && ((x & 1U) != 0U)) {
-                mapped_y = (uint16_t)(state->layout.height - 1U - y);
-            }
-            const uint32_t physical_index = ((uint32_t)x * (uint32_t)state->layout.height) + mapped_y;
-            if (physical_index >= state->led_count) {
-                return ESP_ERR_INVALID_SIZE;
-            }
-
-            const size_t offset = (size_t)physical_index * bytes_per_pixel;
-            if (offset + bytes_per_pixel > state->frame_buffer_len) {
-                return ESP_ERR_INVALID_SIZE;
-            }
-            state->frame_buffer[offset] = fw_tcp_channel_to_u8(color.r);
-            state->frame_buffer[offset + 1U] = fw_tcp_channel_to_u8(color.g);
-            state->frame_buffer[offset + 2U] = fw_tcp_channel_to_u8(color.b);
-            logical_index += 1U;
-        }
+    int rc = fw_native_shader_render_frame(
+        time_seconds,
+        (float)frame_counter,
+        state->layout.width,
+        state->layout.height,
+        state->layout.serpentine_columns ? 1 : 0,
+        state->frame_buffer,
+        state->frame_buffer_len
+    );
+    if (rc != 0) {
+        return ESP_FAIL;
     }
 
     return fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
@@ -454,8 +431,12 @@ static void fw_tcp_shader_task(void *arg) {
     fw_tcp_server_state_t *state = (fw_tcp_server_state_t *)arg;
     const int64_t shader_time_start_us = esp_timer_get_time();
     uint32_t frame_counter = 0U;
-    TickType_t last_wake_tick = xTaskGetTickCount();
-    const TickType_t frame_interval_ticks = pdMS_TO_TICKS(FW_SHADER_FRAME_INTERVAL_MS);
+    const int64_t frame_interval_us = (int64_t)FW_SHADER_FRAME_INTERVAL_MS * 1000;
+
+    /* Subscribe to task watchdog so the IDLE task on this core is not
+     * blamed for starvation while the shader loop runs continuously. */
+    esp_task_wdt_add(NULL);
+    int64_t next_deadline_us = esp_timer_get_time() + frame_interval_us;
 
     while (true) {
         if (state->state_lock != NULL && xSemaphoreTake(state->state_lock, portMAX_DELAY) == pdTRUE) {
@@ -488,10 +469,26 @@ static void fw_tcp_shader_task(void *arg) {
             }
             xSemaphoreGive(state->state_lock);
         }
-        if (frame_interval_ticks > 0) {
-            vTaskDelayUntil(&last_wake_tick, frame_interval_ticks);
-        } else {
-            taskYIELD();
+        esp_task_wdt_reset();
+        /* Microsecond-precision absolute deadline timing.  FreeRTOS
+         * vTaskDelayUntil uses ticks (default 10 ms), giving only 33 or
+         * 50 FPS instead of the 40 FPS target.  We sleep via vTaskDelay
+         * for coarse alignment then spin-yield for the remainder. */
+        {
+            int64_t now_us = esp_timer_get_time();
+            int64_t sleep_us = next_deadline_us - now_us;
+            if (sleep_us > 2000) {
+                TickType_t delay_ticks = pdMS_TO_TICKS((sleep_us - 1000) / 1000);
+                if (delay_ticks < 1) delay_ticks = 1;
+                vTaskDelay(delay_ticks);
+            } else if (sleep_us <= 0) {
+                taskYIELD();
+            }
+            /* Spin for sub-tick precision (typically < 1 ms). */
+            while (esp_timer_get_time() < next_deadline_us) {
+                taskYIELD();
+            }
+            next_deadline_us += frame_interval_us;
         }
     }
 }
@@ -1250,7 +1247,7 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
         return ESP_ERR_NO_MEM;
     }
 
-    if (xTaskCreate(fw_tcp_shader_task, "fw_tcp_shader", 12288, &g_fw_tcp_server, 4, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(fw_tcp_shader_task, "fw_tcp_shader", 12288, &g_fw_tcp_server, 4, NULL, 1) != pdPASS) {
         ESP_LOGE(TAG, "shader task create failed");
         vTaskDelete(server_task);
         vSemaphoreDelete(g_fw_tcp_server.state_lock);

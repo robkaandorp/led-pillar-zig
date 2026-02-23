@@ -6,3 +6,5 @@ idf_component_register(
 
 # Keep VM hot path optimized even when global project config uses debug optimization.
 set_source_files_properties(fw_bytecode_vm.c PROPERTIES COMPILE_OPTIONS "-O3;-ffast-math;-fno-math-errno")
+set_source_files_properties(fw_native_shader.c PROPERTIES COMPILE_OPTIONS "-O3;-ffast-math;-fno-math-errno")
+set_source_files_properties(generated/dsl_shader_generated.c PROPERTIES COMPILE_OPTIONS "-O3;-ffast-math;-fno-math-errno")
