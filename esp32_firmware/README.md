@@ -79,9 +79,10 @@ Validation/safety checks enforce:
 
 RMT output behavior (`fw_led_output`):
 
-- Creates one `led_strip_new_rmt_device()` instance per segment.
-- Uses `led_strip_rmt_config_t.resolution_hz = 10_000_000`.
-- Clears strips on init/deinit and refreshes each segment per frame.
+- Uses custom ESP-IDF RMT TX channels (one channel per segment), not `led_strip` runtime APIs.
+- Uses `resolution_hz = 10_000_000` WS2812 timing via a custom byte+reset encoder.
+- Maintains per-segment double frame buffers (ping-pong), queues TX asynchronously, and waits only when reusing an in-flight buffer slot.
+- Uses RMT sync-manager when available so segment channels start each queued frame in sync.
 - Supports RGB/RGBW/GRB/GRBW/BGR input encodings; for 4-byte formats, W is added into RGB with saturation before output.
 - Applies configurable gamma correction through a 256-entry LUT before writing RGB values to the strip.
 
@@ -112,6 +113,13 @@ Supported commands:
 - `0x04` clear default shader hook (erase from NVS)
 - `0x05` query hook/upload/active/fault state (+ persisted blob size + slow-frame telemetry)
 - `0x06` upload and apply firmware image (raw app `.bin` bytes streamed in payload; device reboots on success)
+- `0x07` activate built-in native C shader (no upload; starts continuous on-device native shader rendering)
+
+Native shader source wiring:
+
+- Firmware compiles `main/generated/dsl_shader_generated.c` through `main/fw_native_shader.c`.
+- Host DSL flows (`dsl-file` / DSL `bytecode-upload`) overwrite that generated file automatically.
+- After generating, a normal firmware build+flash is enough to run it via v3 command `0x07`.
 
 For `0x06` push OTA, firmware must be built/flashed with an OTA partition table (`CONFIG_PARTITION_TABLE_TWO_OTA=y`).
 If the device was flashed earlier with single-app partitions, do one USB flash first so bootloader+partition table are updated.

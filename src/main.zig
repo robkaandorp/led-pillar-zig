@@ -17,6 +17,7 @@ const EffectKind = enum {
     dsl_file,
     bytecode_upload,
     firmware_upload,
+    native_shader_activate,
 };
 
 const RunConfig = struct {
@@ -39,6 +40,7 @@ const v3_cmd_upload_bytecode: u8 = 0x01;
 const v3_cmd_activate_shader: u8 = 0x02;
 const v3_cmd_query_default_hook: u8 = 0x05;
 const v3_cmd_upload_firmware: u8 = 0x06;
+const v3_cmd_activate_native_shader: u8 = 0x07;
 const v3_response_flag: u8 = 0x80;
 
 pub fn main() !void {
@@ -81,6 +83,10 @@ pub fn main() !void {
             run_config.port,
             run_config.firmware_file_path orelse return error.MissingFirmwarePath,
         );
+        return;
+    }
+    if (run_config.effect == .native_shader_activate) {
+        try runNativeShaderActivate(run_config.host, run_config.port);
         return;
     }
 
@@ -153,6 +159,7 @@ pub fn main() !void {
         ),
         .bytecode_upload => unreachable,
         .firmware_upload => unreachable,
+        .native_shader_activate => unreachable,
     }
 }
 
@@ -169,6 +176,7 @@ fn runBytecodeUpload(host: []const u8, port: u16, bytecode_file_path: []const u8
         defer arena.deinit();
         const source = try std.fs.cwd().readFileAlloc(arena.allocator(), bytecode_file_path, std.math.maxInt(usize));
         const program = try led.dsl_parser.parseAndValidate(arena.allocator(), source);
+        try writeDslCReference(program, bytecode_file_path);
         var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
         defer evaluator.deinit();
         const payload_writer = compiled_payload.writer(std.heap.page_allocator);
@@ -291,6 +299,26 @@ fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8
     std.debug.print("Firmware upload accepted (status=OK); device should reboot into the new image.\n", .{});
 }
 
+fn runNativeShaderActivate(host: []const u8, port: u16) !void {
+    std.debug.print("Activating built-in native C shader...\n", .{});
+    std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
+    var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
+    defer stream.close();
+    std.debug.print("Connected.\n", .{});
+
+    try writeV3Header(&stream, v3_cmd_activate_native_shader, 0);
+    const response = try readV3StatusResponse(&stream, v3_cmd_activate_native_shader);
+    if (response.status != 0) {
+        std.debug.print(
+            "Native shader activation failed: v3 status={d} ({s})\n",
+            .{ response.status, v3StatusName(response.status) },
+        );
+        return error.V3CommandFailed;
+    }
+    std.debug.print("Native shader activation completed successfully.\n", .{});
+    try monitorShaderSlowFrames(&stream);
+}
+
 fn clearDisplayOnExit(client: *led.TcpClient, display: *led.DisplayBuffer) !void {
     try led.effects.fillSolid(display, .{});
     try client.sendFrame(display.payload());
@@ -312,6 +340,7 @@ fn runDslFileEffect(
     var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
     defer evaluator.deinit();
     try writeDslBytecodeReference(&evaluator, dsl_file_path);
+    try writeDslCReference(program, dsl_file_path);
 
     const pixel_count = @as(usize, @intCast(display.pixel_count));
     const frame = try std.heap.page_allocator.alloc(led.effects.Color, pixel_count);
@@ -354,6 +383,26 @@ fn writeDslBytecodeReference(evaluator: *const led.dsl_runtime.Evaluator, dsl_fi
     var file_writer = file.writer(&file_buffer);
     const writer = &file_writer.interface;
     try evaluator.writeBytecodeBinary(writer);
+    try writer.flush();
+}
+
+fn writeDslCReference(program: led.dsl_parser.Program, dsl_file_path: []const u8) !void {
+    _ = dsl_file_path;
+    const allocator = std.heap.page_allocator;
+    const output_path = try std.fs.path.join(
+        allocator,
+        &[_][]const u8{ "esp32_firmware", "main", "generated", "dsl_shader_generated.c" },
+    );
+    defer allocator.free(output_path);
+
+    try std.fs.cwd().makePath("esp32_firmware/main/generated");
+    var file = try std.fs.cwd().createFile(output_path, .{ .truncate = true });
+    defer file.close();
+
+    var file_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = file.writer(&file_buffer);
+    const writer = &file_writer.interface;
+    try led.dsl_c_emitter.writeProgramC(allocator, writer, program);
     try writer.flush();
 }
 
@@ -457,7 +506,7 @@ fn parseRunConfig(args: anytype) !RunConfig {
     }
 
     switch (run_config.effect) {
-        .demo, .running_dot, .soap_bubbles, .campfire, .aurora_ribbons, .rain_ripple => {
+        .demo, .running_dot, .soap_bubbles, .campfire, .aurora_ribbons, .rain_ripple, .native_shader_activate => {
             if (args.next() != null) return error.TooManyArguments;
         },
         .health_test => {
@@ -523,6 +572,7 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
     if (std.mem.eql(u8, effect_arg, "dsl-file")) return .dsl_file;
     if (std.mem.eql(u8, effect_arg, "bytecode-upload")) return .bytecode_upload;
     if (std.mem.eql(u8, effect_arg, "firmware-upload")) return .firmware_upload;
+    if (std.mem.eql(u8, effect_arg, "native-shader-activate")) return .native_shader_activate;
     return error.UnknownEffect;
 }
 
@@ -771,6 +821,7 @@ test "parseEffectKind accepts known effect names" {
     try std.testing.expectEqual(.dsl_file, try parseEffectKind("dsl-file"));
     try std.testing.expectEqual(.bytecode_upload, try parseEffectKind("bytecode-upload"));
     try std.testing.expectEqual(.firmware_upload, try parseEffectKind("firmware-upload"));
+    try std.testing.expectEqual(.native_shader_activate, try parseEffectKind("native-shader-activate"));
 }
 
 test "parseMaybeU16 returns null for non-numeric strings" {
@@ -843,4 +894,19 @@ test "parseRunConfig bytecode-upload requires path" {
         .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "bytecode-upload" },
     };
     try std.testing.expectError(error.MissingBytecodePath, parseRunConfig(&args));
+}
+
+test "parseRunConfig parses native-shader-activate mode" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "native-shader-activate" },
+    };
+    const run_config = try parseRunConfig(&args);
+    try std.testing.expectEqual(.native_shader_activate, run_config.effect);
+}
+
+test "parseRunConfig native-shader-activate rejects extra args" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "native-shader-activate", "extra" },
+    };
+    try std.testing.expectError(error.TooManyArguments, parseRunConfig(&args));
 }

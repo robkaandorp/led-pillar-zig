@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -25,6 +26,7 @@
 
 #include "fw_bytecode_vm.h"
 #include "fw_led_output.h"
+#include "fw_native_shader.h"
 
 #ifdef CONFIG_FW_V12_REMAP_LOGICAL
 #define FW_V12_REMAP_LOGICAL true
@@ -48,6 +50,7 @@
 #define FW_TCP_V3_CMD_CLEAR_DEFAULT_HOOK 0x04U
 #define FW_TCP_V3_CMD_QUERY_DEFAULT_HOOK 0x05U
 #define FW_TCP_V3_CMD_UPLOAD_FIRMWARE 0x06U
+#define FW_TCP_V3_CMD_ACTIVATE_NATIVE_SHADER 0x07U
 #define FW_TCP_V3_RESPONSE_FLAG 0x80U
 
 #define FW_TCP_V3_STATUS_OK 0U
@@ -66,6 +69,12 @@
 #define FW_STARTUP_WHITE_MS 1000U
 #define FW_SHADER_FRAME_INTERVAL_MS 25U
 
+typedef enum {
+    FW_TCP_SHADER_SOURCE_NONE = 0,
+    FW_TCP_SHADER_SOURCE_BYTECODE = 1,
+    FW_TCP_SHADER_SOURCE_NATIVE = 2,
+} fw_tcp_shader_source_t;
+
 typedef struct {
     bool started;
     fw_led_layout_config_t layout;
@@ -78,6 +87,7 @@ typedef struct {
     size_t bytecode_blob_len;
     bool has_uploaded_program;
     bool shader_active;
+    fw_tcp_shader_source_t shader_source;
     bool default_shader_persisted;
     bool default_shader_faulted;
     uint32_t shader_slow_frame_count;
@@ -292,6 +302,9 @@ static esp_err_t fw_tcp_show_startup_sequence(fw_tcp_server_state_t *state) {
 }
 
 static uint8_t fw_tcp_channel_to_u8(float value) {
+    if (!isfinite(value)) {
+        return 0U;
+    }
     float clamped = value;
     if (clamped < 0.0f) {
         clamped = 0.0f;
@@ -301,8 +314,67 @@ static uint8_t fw_tcp_channel_to_u8(float value) {
     return (uint8_t)(clamped * 255.0f + 0.5f);
 }
 
+static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t *state, float time_seconds, uint32_t frame_counter) {
+    if (state == NULL || !state->shader_active || state->shader_source != FW_TCP_SHADER_SOURCE_NATIVE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const size_t bytes_per_pixel = 3U;
+    const size_t required_len = (size_t)state->led_count * bytes_per_pixel;
+    if (required_len > state->frame_buffer_len) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    state->uniform_last_color_valid = false;
+
+    uint32_t logical_index = 0U;
+    for (uint16_t y = 0; y < state->layout.height; y += 1U) {
+        for (uint16_t x = 0; x < state->layout.width; x += 1U) {
+            fw_native_shader_color_t color = {0};
+            fw_native_shader_eval_pixel(
+                time_seconds,
+                (float)frame_counter,
+                (float)x,
+                (float)y,
+                (float)state->layout.width,
+                (float)state->layout.height,
+                &color
+            );
+            if (logical_index >= state->led_count) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            uint16_t mapped_y = y;
+            if (state->layout.serpentine_columns && ((x & 1U) != 0U)) {
+                mapped_y = (uint16_t)(state->layout.height - 1U - y);
+            }
+            const uint32_t physical_index = ((uint32_t)x * (uint32_t)state->layout.height) + mapped_y;
+            if (physical_index >= state->led_count) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+
+            const size_t offset = (size_t)physical_index * bytes_per_pixel;
+            if (offset + bytes_per_pixel > state->frame_buffer_len) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+            state->frame_buffer[offset] = fw_tcp_channel_to_u8(color.r);
+            state->frame_buffer[offset + 1U] = fw_tcp_channel_to_u8(color.g);
+            state->frame_buffer[offset + 2U] = fw_tcp_channel_to_u8(color.b);
+            logical_index += 1U;
+        }
+    }
+
+    return fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
+}
+
 static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state, float time_seconds, uint32_t frame_counter) {
     if (state == NULL || !state->shader_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (state->shader_source == FW_TCP_SHADER_SOURCE_NATIVE) {
+        return fw_tcp_render_native_shader_frame_locked(state, time_seconds, frame_counter);
+    }
+    if (state->shader_source != FW_TCP_SHADER_SOURCE_BYTECODE) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -329,10 +401,6 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
         const uint8_t r = fw_tcp_channel_to_u8(color.r);
         const uint8_t g = fw_tcp_channel_to_u8(color.g);
         const uint8_t b = fw_tcp_channel_to_u8(color.b);
-        if (state->uniform_last_color_valid && state->uniform_last_r == r && state->uniform_last_g == g &&
-            state->uniform_last_b == b) {
-            return ESP_OK;
-        }
         esp_err_t push_err = fw_led_output_push_uniform_rgb(&state->led_output, r, g, b);
         if (push_err == ESP_OK) {
             state->uniform_last_color_valid = true;
@@ -522,6 +590,7 @@ static esp_err_t fw_tcp_load_persisted_default_shader(fw_tcp_server_state_t *sta
     state->bytecode_blob_len = read_len;
     state->has_uploaded_program = true;
     state->shader_active = true;
+    state->shader_source = FW_TCP_SHADER_SOURCE_BYTECODE;
     state->uniform_last_color_valid = false;
     state->default_shader_persisted = true;
     state->default_shader_faulted = false;
@@ -547,6 +616,7 @@ static uint8_t fw_tcp_handle_v3_upload(fw_tcp_server_state_t *state, const uint8
         state->has_uploaded_program = false;
         state->bytecode_blob_len = 0U;
         state->shader_active = false;
+        state->shader_source = FW_TCP_SHADER_SOURCE_NONE;
         state->uniform_last_color_valid = false;
         xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_VM_ERROR;
@@ -555,6 +625,7 @@ static uint8_t fw_tcp_handle_v3_upload(fw_tcp_server_state_t *state, const uint8
     state->bytecode_blob_len = payload_len;
     state->has_uploaded_program = true;
     state->shader_active = false;
+    state->shader_source = FW_TCP_SHADER_SOURCE_NONE;
     state->uniform_last_color_valid = false;
     xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
@@ -587,6 +658,28 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
     }
 
     state->shader_active = true;
+    state->shader_source = FW_TCP_SHADER_SOURCE_BYTECODE;
+    state->shader_slow_frame_count = 0U;
+    state->shader_last_slow_frame_ms = 0U;
+    state->shader_frame_count = 0U;
+    state->uniform_last_color_valid = false;
+    xSemaphoreGive(state->state_lock);
+    return FW_TCP_V3_STATUS_OK;
+}
+
+static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state) {
+    if (state == NULL) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+
+    state->shader_active = true;
+    state->shader_source = FW_TCP_SHADER_SOURCE_NATIVE;
+    state->shader_slow_frame_count = 0U;
+    state->shader_last_slow_frame_ms = 0U;
+    state->shader_frame_count = 0U;
     state->uniform_last_color_valid = false;
     xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
@@ -701,6 +794,13 @@ static bool fw_tcp_handle_v3_message(int sock, fw_tcp_server_state_t *state, uin
                 sizeof(response_payload),
                 &response_len
             );
+            break;
+        case FW_TCP_V3_CMD_ACTIVATE_NATIVE_SHADER:
+            if (payload_len != 0U) {
+                status = FW_TCP_V3_STATUS_INVALID_ARG;
+            } else {
+                status = fw_tcp_handle_v3_activate_native(state);
+            }
             break;
         default:
             status = FW_TCP_V3_STATUS_UNSUPPORTED_CMD;

@@ -4,14 +4,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "driver/rmt_tx.h"
 #include "esp_err.h"
 #include "fw_led_config.h"
-#include "led_strip.h"
 
 typedef struct {
     bool initialized;
     fw_led_layout_config_t layout;
-    led_strip_handle_t segments[FW_LED_MAX_SEGMENTS];
+    rmt_channel_handle_t channels[FW_LED_MAX_SEGMENTS];
+    rmt_encoder_handle_t encoders[FW_LED_MAX_SEGMENTS];
+    rmt_sync_manager_handle_t sync_manager;
+    uint8_t *segment_buffers[FW_LED_MAX_SEGMENTS][2];
+    size_t segment_buffer_len[FW_LED_MAX_SEGMENTS];
+    bool slot_in_flight[2];
+    uint8_t next_slot;
+    bool sync_needs_reset;
     uint16_t gamma_x100;
     uint8_t gamma_lut[256];
 } fw_led_output_t;
