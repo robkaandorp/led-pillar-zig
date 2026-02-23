@@ -19,7 +19,10 @@ static const char *TAG = "fw_led_out";
 #endif
 
 #define FW_RMT_RESOLUTION_HZ (10U * 1000U * 1000U)
-#define FW_RMT_MEM_BLOCK_SYMBOLS 256U
+// ESP32 has 512 RMT symbols shared across 8 channels (64 per block).
+// 3 segments × 64 = 192 symbols (3 of 8 blocks). Safe for original ESP32.
+// ESP32-S2/S3 use DMA and can go higher, but 64 works universally.
+#define FW_RMT_MEM_BLOCK_SYMBOLS 64U
 #define FW_RMT_QUEUE_DEPTH 2U
 #define FW_CONTAINER_OF(ptr, type, member) ((type *)((char *)(ptr)-offsetof(type, member)))
 

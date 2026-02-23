@@ -21,6 +21,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -610,7 +611,9 @@ static uint8_t fw_tcp_handle_v3_upload(fw_tcp_server_state_t *state, const uint8
         return FW_TCP_V3_STATUS_INTERNAL;
     }
 
-    memcpy(state->bytecode_blob, payload, payload_len);
+    if (payload != state->bytecode_blob) {
+        memcpy(state->bytecode_blob, payload, payload_len);
+    }
     fw_bc3_status_t vm_status = fw_bc3_program_load(&state->uploaded_program, state->bytecode_blob, payload_len);
     if (vm_status != FW_BC3_OK) {
         ESP_LOGW(TAG, "bytecode load failed: %s", fw_bc3_status_to_string(vm_status));
@@ -1025,6 +1028,32 @@ static bool fw_tcp_client_loop(int client_sock, fw_tcp_server_state_t *state) {
                 }
                 continue;
             }
+            if (cmd == FW_TCP_V3_CMD_UPLOAD_BYTECODE) {
+                if (payload_len > FW_TCP_MAX_BYTECODE_BLOB) {
+                    if (!fw_tcp_drain_bytes(client_sock, payload_len)) {
+                        return false;
+                    }
+                    if (!fw_tcp_send_v3_response(
+                            client_sock,
+                            (uint8_t)(cmd | FW_TCP_V3_RESPONSE_FLAG),
+                            FW_TCP_V3_STATUS_TOO_LARGE,
+                            NULL,
+                            0U
+                        )) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (payload_len > 0U) {
+                    if (!fw_tcp_recv_exact(client_sock, state->bytecode_blob, payload_len)) {
+                        return false;
+                    }
+                }
+                if (!fw_tcp_handle_v3_message(client_sock, state, cmd, state->bytecode_blob, payload_len)) {
+                    return false;
+                }
+                continue;
+            }
             if (payload_len > state->rx_buffer_len) {
                 if (!fw_tcp_drain_bytes(client_sock, payload_len)) {
                     return false;
@@ -1141,32 +1170,43 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
     }
 
     g_fw_tcp_server.frame_buffer_len = (size_t)g_fw_tcp_server.led_count * FW_TCP_MAX_BYTES_PER_PIXEL;
-    g_fw_tcp_server.rx_buffer_len =
-        (g_fw_tcp_server.frame_buffer_len > FW_TCP_MAX_BYTECODE_BLOB) ? g_fw_tcp_server.frame_buffer_len : FW_TCP_MAX_BYTECODE_BLOB;
+    g_fw_tcp_server.rx_buffer_len = g_fw_tcp_server.frame_buffer_len;
+
+    ESP_LOGI(TAG, "free heap before alloc: %" PRIu32 " bytes (largest block: %" PRIu32 ")",
+             (uint32_t)esp_get_free_heap_size(), (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    ESP_LOGI(TAG, "need: frame_buf=%u rx_buf=%u bytecode=%u",
+             (unsigned)g_fw_tcp_server.frame_buffer_len, (unsigned)g_fw_tcp_server.rx_buffer_len,
+             (unsigned)FW_TCP_MAX_BYTECODE_BLOB);
 
     g_fw_tcp_server.frame_buffer = (uint8_t *)calloc(1U, g_fw_tcp_server.frame_buffer_len);
     g_fw_tcp_server.rx_buffer = (uint8_t *)malloc(g_fw_tcp_server.rx_buffer_len);
     g_fw_tcp_server.bytecode_blob = (uint8_t *)malloc(FW_TCP_MAX_BYTECODE_BLOB);
 
     if (g_fw_tcp_server.frame_buffer == NULL || g_fw_tcp_server.rx_buffer == NULL || g_fw_tcp_server.bytecode_blob == NULL) {
+        ESP_LOGE(TAG, "buffer alloc failed: frame=%p rx=%p bytecode=%p",
+                 g_fw_tcp_server.frame_buffer, g_fw_tcp_server.rx_buffer, g_fw_tcp_server.bytecode_blob);
         free(g_fw_tcp_server.frame_buffer);
         free(g_fw_tcp_server.rx_buffer);
         free(g_fw_tcp_server.bytecode_blob);
         memset(&g_fw_tcp_server, 0, sizeof(g_fw_tcp_server));
         return ESP_ERR_NO_MEM;
     }
+    ESP_LOGI(TAG, "buffers allocated, heap: %" PRIu32, (uint32_t)esp_get_free_heap_size());
 
     esp_err_t led_output_err = fw_led_output_init(&g_fw_tcp_server.led_output, &g_fw_tcp_server.layout);
     if (led_output_err != ESP_OK) {
+        ESP_LOGE(TAG, "led_output_init failed: %s", esp_err_to_name(led_output_err));
         free(g_fw_tcp_server.frame_buffer);
         free(g_fw_tcp_server.rx_buffer);
         free(g_fw_tcp_server.bytecode_blob);
         memset(&g_fw_tcp_server, 0, sizeof(g_fw_tcp_server));
         return led_output_err;
     }
+    ESP_LOGI(TAG, "led_output_init ok, heap: %" PRIu32, (uint32_t)esp_get_free_heap_size());
 
     esp_err_t startup_err = fw_tcp_show_startup_sequence(&g_fw_tcp_server);
     if (startup_err != ESP_OK) {
+        ESP_LOGE(TAG, "startup_sequence failed: %s", esp_err_to_name(startup_err));
         fw_led_output_deinit(&g_fw_tcp_server.led_output);
         free(g_fw_tcp_server.frame_buffer);
         free(g_fw_tcp_server.rx_buffer);
@@ -1174,6 +1214,7 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
         memset(&g_fw_tcp_server, 0, sizeof(g_fw_tcp_server));
         return startup_err;
     }
+    ESP_LOGI(TAG, "startup_sequence ok, heap: %" PRIu32, (uint32_t)esp_get_free_heap_size());
 
     esp_err_t default_shader_err = fw_tcp_load_persisted_default_shader(&g_fw_tcp_server);
     if (default_shader_err == ESP_OK) {
@@ -1196,8 +1237,10 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
         return ESP_ERR_NO_MEM;
     }
 
+    ESP_LOGI(TAG, "creating tasks, heap: %" PRIu32, (uint32_t)esp_get_free_heap_size());
     TaskHandle_t server_task = NULL;
     if (xTaskCreate(fw_tcp_server_task, "fw_tcp_server", 8192, &g_fw_tcp_server, 5, &server_task) != pdPASS) {
+        ESP_LOGE(TAG, "server task create failed");
         vSemaphoreDelete(g_fw_tcp_server.state_lock);
         fw_led_output_deinit(&g_fw_tcp_server.led_output);
         free(g_fw_tcp_server.frame_buffer);
@@ -1208,6 +1251,7 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
     }
 
     if (xTaskCreate(fw_tcp_shader_task, "fw_tcp_shader", 12288, &g_fw_tcp_server, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "shader task create failed");
         vTaskDelete(server_task);
         vSemaphoreDelete(g_fw_tcp_server.state_lock);
         fw_led_output_deinit(&g_fw_tcp_server.led_output);
