@@ -67,11 +67,12 @@ https://github.com/robkaandorp/tcp_led_stream
   - `dsl-compile <path-to-effect.dsl>` (compile-only mode; writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits `esp32_firmware/main/generated/dsl_shader_generated.c` without opening TCP)
   - `bytecode-upload <path-to-bytecode.bin|path-to-effect.dsl>` (protocol v3 bytecode upload + activate; `.dsl` is compiled first and also emits `esp32_firmware/main/generated/dsl_shader_generated.c`, then monitors shader FPS + slow frames until you press Enter)
   - `native-shader-activate` (protocol v3 command to activate built-in firmware native C shader; monitors shader FPS + slow frames until you press Enter)
+  - `stop` (protocol v3 command to stop the currently running shader and clear the display to black)
   - `firmware-upload <path-to-led_pillar_firmware.bin>` (protocol v3 push OTA upload command)
 - On normal exit or `Ctrl+C`, the sender clears the LED display to black before disconnecting.
 - Run console TCP display simulator: `zig build simulator -- [port]`
 - The simulator renders the matrix and prints live stats (FPS, bytes/s, total frames, total bytes) below it.
-- It now also handles v3 shader control commands (`bytecode-upload`, `native-shader-activate`, `query`) and renders frames by executing `esp32_firmware/main/generated/dsl_shader_generated.c`.
+- It now also handles v3 shader control commands (`bytecode-upload`, `native-shader-activate`, `stop`, `query`) and renders frames by executing `esp32_firmware/main/generated/dsl_shader_generated.c`.
 - Run full tests: `zig build test`
 - Run tests in the library module: `zig build test-root`
 - Run tests in the executable module: `zig build test-main`

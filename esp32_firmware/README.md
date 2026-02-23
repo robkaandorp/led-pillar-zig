@@ -114,6 +114,7 @@ Supported commands:
 - `0x05` query hook/upload/active/fault state (+ persisted blob size + slow-frame telemetry)
 - `0x06` upload and apply firmware image (raw app `.bin` bytes streamed in payload; device reboots on success)
 - `0x07` activate built-in native C shader (no upload; starts continuous on-device native shader rendering)
+- `0x08` stop current shader and clear display to black
 
 Native shader source wiring:
 

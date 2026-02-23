@@ -51,6 +51,7 @@
 #define FW_TCP_V3_CMD_QUERY_DEFAULT_HOOK 0x05U
 #define FW_TCP_V3_CMD_UPLOAD_FIRMWARE 0x06U
 #define FW_TCP_V3_CMD_ACTIVATE_NATIVE_SHADER 0x07U
+#define FW_TCP_V3_CMD_STOP_SHADER 0x08U
 #define FW_TCP_V3_RESPONSE_FLAG 0x80U
 
 #define FW_TCP_V3_STATUS_OK 0U
@@ -685,6 +686,29 @@ static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state) {
     return FW_TCP_V3_STATUS_OK;
 }
 
+static uint8_t fw_tcp_handle_v3_stop_shader(fw_tcp_server_state_t *state) {
+    if (state == NULL) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+    if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+
+    state->shader_active = false;
+    state->shader_source = FW_TCP_SHADER_SOURCE_NONE;
+    state->shader_slow_frame_count = 0U;
+    state->shader_last_slow_frame_ms = 0U;
+    state->shader_frame_count = 0U;
+    state->uniform_last_color_valid = false;
+    esp_err_t clear_err = fw_led_output_push_uniform_rgb(&state->led_output, 0U, 0U, 0U);
+    xSemaphoreGive(state->state_lock);
+    if (clear_err != ESP_OK) {
+        ESP_LOGW(TAG, "shader stop clear failed: %s", esp_err_to_name(clear_err));
+        return FW_TCP_V3_STATUS_INTERNAL;
+    }
+    return FW_TCP_V3_STATUS_OK;
+}
+
 static uint8_t fw_tcp_handle_v3_set_hook(fw_tcp_server_state_t *state, const uint8_t *payload, size_t payload_len) {
     (void)payload;
     if (state == NULL || payload_len != 0U) {
@@ -800,6 +824,13 @@ static bool fw_tcp_handle_v3_message(int sock, fw_tcp_server_state_t *state, uin
                 status = FW_TCP_V3_STATUS_INVALID_ARG;
             } else {
                 status = fw_tcp_handle_v3_activate_native(state);
+            }
+            break;
+        case FW_TCP_V3_CMD_STOP_SHADER:
+            if (payload_len != 0U) {
+                status = FW_TCP_V3_STATUS_INVALID_ARG;
+            } else {
+                status = fw_tcp_handle_v3_stop_shader(state);
             }
             break;
         default:

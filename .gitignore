@@ -1,6 +1,7 @@
 .zig-cache/
 zig-out/
 zig-out-simtest/
+zig-out-temp/
 bytecode/
 esp32_firmware/build/
 esp32_firmware/managed_components/

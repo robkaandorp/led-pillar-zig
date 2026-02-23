@@ -66,6 +66,7 @@ const v3_cmd_clear_default_hook: u8 = 0x04;
 const v3_cmd_query_default_hook: u8 = 0x05;
 const v3_cmd_upload_firmware: u8 = 0x06;
 const v3_cmd_activate_native_shader: u8 = 0x07;
+const v3_cmd_stop_shader: u8 = 0x08;
 const v3_response_flag: u8 = 0x80;
 
 const v3_status_ok: u8 = 0;
@@ -121,43 +122,12 @@ pub fn runServer(port: u16, width: u16, height: u16) !void {
     const max_payload_len = @max(frame_payload_len, v3_max_bytecode_blob);
     const payload_buffer = try std.heap.page_allocator.alloc(u8, max_payload_len);
     defer std.heap.page_allocator.free(payload_buffer);
-
-    var address = try std.net.Address.parseIp4("0.0.0.0", port);
-    var server = try address.listen(.{ .reuse_address = true });
-    defer server.deinit();
-
-    std.debug.print("Simulator listening on 0.0.0.0:{d}\n", .{port});
-    while (true) {
-        var connection = try server.accept();
-        defer connection.stream.close();
-        std.debug.print("Client connected: {any}\n", .{connection.address});
-        serveConnection(&connection.stream, width, height, expected_pixels, payload_buffer) catch |err| {
-            if (err != error.EndOfStream) {
-                std.debug.print("Connection closed with error: {any}\n", .{err});
-            }
-        };
-    }
-}
-
-fn serveConnection(
-    stream: *std.net.Stream,
-    width: u16,
-    height: u16,
-    expected_pixels: u32,
-    payload_buffer: []u8,
-) !void {
-    var reader_buffer: [16 * 1024]u8 = undefined;
-    var reader = stream.reader(&reader_buffer);
-    var header_buf: [tcp_client.header_len]u8 = undefined;
-    var first_frame = true;
-    var stats = try SimulatorStats.init();
-    var v3_state = V3State{};
-    var render_lock: std.Thread.Mutex = .{};
-
     const shader_payload_len = try std.math.mul(usize, @as(usize, expected_pixels), 3);
     const shader_payload = try std.heap.page_allocator.alloc(u8, shader_payload_len);
     defer std.heap.page_allocator.free(shader_payload);
 
+    var v3_state = V3State{};
+    var render_lock: std.Thread.Mutex = .{};
     var shader_stop = std.atomic.Value(bool).init(false);
     var shader_ctx = ShaderRenderContext{
         .width = width,
@@ -172,6 +142,38 @@ fn serveConnection(
         shader_stop.store(true, .seq_cst);
         shader_thread.join();
     }
+
+    var address = try std.net.Address.parseIp4("0.0.0.0", port);
+    var server = try address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+
+    std.debug.print("Simulator listening on 0.0.0.0:{d}\n", .{port});
+    while (true) {
+        var connection = try server.accept();
+        defer connection.stream.close();
+        std.debug.print("Client connected: {any}\n", .{connection.address});
+        serveConnection(&connection.stream, width, height, expected_pixels, payload_buffer, &v3_state, &render_lock) catch |err| {
+            if (err != error.EndOfStream) {
+                std.debug.print("Connection closed with error: {any}\n", .{err});
+            }
+        };
+    }
+}
+
+fn serveConnection(
+    stream: *std.net.Stream,
+    width: u16,
+    height: u16,
+    expected_pixels: u32,
+    payload_buffer: []u8,
+    v3_state: *V3State,
+    render_lock: *std.Thread.Mutex,
+) !void {
+    var reader_buffer: [16 * 1024]u8 = undefined;
+    var reader = stream.reader(&reader_buffer);
+    var header_buf: [tcp_client.header_len]u8 = undefined;
+    var first_frame = true;
+    var stats = try SimulatorStats.init();
 
     while (true) {
         readExact(&reader, header_buf[0..]) catch |err| switch (err) {
@@ -194,7 +196,7 @@ fn serveConnection(
             if (payload_len > 0) {
                 try readExact(&reader, payload_buffer[0..payload_len]);
             }
-            try handleV3Message(stream, &v3_state, cmd, payload_buffer[0..payload_len]);
+            try handleV3Message(stream, v3_state, cmd, payload_buffer[0..payload_len]);
             continue;
         }
 
@@ -225,6 +227,7 @@ fn handleV3Message(stream: *std.net.Stream, state: *V3State, cmd: u8, payload: [
         v3_cmd_clear_default_hook => handleV3ClearHook(state, payload),
         v3_cmd_query_default_hook => handleV3Query(state, payload, response_payload[0..], &response_len),
         v3_cmd_activate_native_shader => if (payload.len == 0) handleV3Activate(state, .native) else v3_status_invalid_arg,
+        v3_cmd_stop_shader => handleV3Stop(state, payload),
         v3_cmd_upload_firmware => v3_status_unsupported_cmd,
         else => v3_status_unsupported_cmd,
     };
@@ -275,6 +278,19 @@ fn handleV3ClearHook(state: *V3State, payload: []const u8) u8 {
     defer state.lock.unlock();
     state.default_shader_persisted = false;
     state.default_shader_faulted = false;
+    return v3_status_ok;
+}
+
+fn handleV3Stop(state: *V3State, payload: []const u8) u8 {
+    if (payload.len != 0) return v3_status_invalid_arg;
+
+    state.lock.lock();
+    defer state.lock.unlock();
+    state.shader_active = false;
+    state.shader_source = .none;
+    state.shader_slow_frame_count = 0;
+    state.shader_last_slow_frame_ms = 0;
+    state.shader_frame_count = 0;
     return v3_status_ok;
 }
 
@@ -368,6 +384,21 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
             context.state.lock.unlock();
             was_rendering = true;
         } else {
+            if (was_rendering) {
+                @memset(context.payload, 0);
+                stats.recordFrame(tcp_client.header_len + context.payload.len);
+                context.render_lock.lock();
+                _ = renderFrame(
+                    context.width,
+                    context.height,
+                    .rgb,
+                    context.payload,
+                    &stats,
+                    true,
+                ) catch {};
+                context.render_lock.unlock();
+                clear_screen = true;
+            }
             was_rendering = false;
         }
 
@@ -589,6 +620,18 @@ test "v3 upload requires non-empty payload" {
 test "v3 bytecode activate requires upload first" {
     var state = V3State{};
     try std.testing.expectEqual(v3_status_not_ready, handleV3Activate(&state, .bytecode));
+}
+
+test "v3 stop deactivates shader state" {
+    var state = V3State{
+        .shader_active = true,
+        .shader_source = .native,
+        .shader_frame_count = 77,
+    };
+    try std.testing.expectEqual(v3_status_ok, handleV3Stop(&state, &.{}));
+    try std.testing.expect(!state.shader_active);
+    try std.testing.expectEqual(ShaderSource.none, state.shader_source);
+    try std.testing.expectEqual(@as(u32, 0), state.shader_frame_count);
 }
 
 test "v3 query payload includes frame metrics fields" {

@@ -19,6 +19,7 @@ const EffectKind = enum {
     bytecode_upload,
     firmware_upload,
     native_shader_activate,
+    stop,
 };
 
 const RunConfig = struct {
@@ -42,6 +43,7 @@ const v3_cmd_activate_shader: u8 = 0x02;
 const v3_cmd_query_default_hook: u8 = 0x05;
 const v3_cmd_upload_firmware: u8 = 0x06;
 const v3_cmd_activate_native_shader: u8 = 0x07;
+const v3_cmd_stop_shader: u8 = 0x08;
 const v3_response_flag: u8 = 0x80;
 
 pub fn main() !void {
@@ -92,6 +94,10 @@ pub fn main() !void {
     }
     if (run_config.effect == .native_shader_activate) {
         try runNativeShaderActivate(run_config.host, run_config.port);
+        return;
+    }
+    if (run_config.effect == .stop) {
+        try runShaderStop(run_config.host, run_config.port);
         return;
     }
 
@@ -166,6 +172,7 @@ pub fn main() !void {
         .bytecode_upload => unreachable,
         .firmware_upload => unreachable,
         .native_shader_activate => unreachable,
+        .stop => unreachable,
     }
 }
 
@@ -202,6 +209,8 @@ fn runBytecodeUpload(host: []const u8, port: u16, bytecode_file_path: []const u8
     std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
     var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
     defer stream.close();
+    var reader_buffer: [16 * 1024]u8 = undefined;
+    var reader = stream.reader(&reader_buffer);
     std.debug.print("Connected.\n", .{});
 
     std.debug.print("Sending v3 bytecode upload header (cmd=0x01)...\n", .{});
@@ -224,7 +233,7 @@ fn runBytecodeUpload(host: []const u8, port: u16, bytecode_file_path: []const u8
     }
     if (sent_total != payload_len_usize) return error.InvalidBytecodeSize;
 
-    const upload_response = try readV3StatusResponse(&stream, v3_cmd_upload_bytecode);
+    const upload_response = try readV3StatusResponse(&reader, v3_cmd_upload_bytecode);
     if (upload_response.status != 0) {
         std.debug.print("Bytecode upload failed: v3 status={d} ({s})\n", .{ upload_response.status, v3StatusName(upload_response.status) });
         return error.V3CommandFailed;
@@ -232,14 +241,14 @@ fn runBytecodeUpload(host: []const u8, port: u16, bytecode_file_path: []const u8
 
     std.debug.print("Activating uploaded shader (cmd=0x02)...\n", .{});
     try writeV3Header(&stream, v3_cmd_activate_shader, 0);
-    const activate_response = try readV3StatusResponse(&stream, v3_cmd_activate_shader);
+    const activate_response = try readV3StatusResponse(&reader, v3_cmd_activate_shader);
     if (activate_response.status != 0) {
         std.debug.print("Shader activation failed: v3 status={d} ({s})\n", .{ activate_response.status, v3StatusName(activate_response.status) });
         return error.V3CommandFailed;
     }
 
     std.debug.print("Bytecode upload + activation completed successfully.\n", .{});
-    try monitorShaderSlowFrames(&stream);
+    try monitorShaderSlowFrames(&stream, &reader);
 }
 
 fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8) !void {
@@ -256,6 +265,8 @@ fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8
     std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
     var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
     defer stream.close();
+    var reader_buffer: [16 * 1024]u8 = undefined;
+    var reader = stream.reader(&reader_buffer);
     std.debug.print("Connected.\n", .{});
 
     std.debug.print("Sending v3 upload header (cmd=0x06)...\n", .{});
@@ -288,7 +299,7 @@ fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8
     }
 
     std.debug.print("Waiting for v3 response...\n", .{});
-    const response = try readV3StatusResponse(&stream, v3_cmd_upload_firmware);
+    const response = try readV3StatusResponse(&reader, v3_cmd_upload_firmware);
     std.debug.print("Received v3 response header: payload_len={d}\n", .{response.payload_len});
 
     if (response.status != 0) {
@@ -310,10 +321,12 @@ fn runNativeShaderActivate(host: []const u8, port: u16) !void {
     std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
     var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
     defer stream.close();
+    var reader_buffer: [16 * 1024]u8 = undefined;
+    var reader = stream.reader(&reader_buffer);
     std.debug.print("Connected.\n", .{});
 
     try writeV3Header(&stream, v3_cmd_activate_native_shader, 0);
-    const response = try readV3StatusResponse(&stream, v3_cmd_activate_native_shader);
+    const response = try readV3StatusResponse(&reader, v3_cmd_activate_native_shader);
     if (response.status != 0) {
         std.debug.print(
             "Native shader activation failed: v3 status={d} ({s})\n",
@@ -322,7 +335,28 @@ fn runNativeShaderActivate(host: []const u8, port: u16) !void {
         return error.V3CommandFailed;
     }
     std.debug.print("Native shader activation completed successfully.\n", .{});
-    try monitorShaderSlowFrames(&stream);
+    try monitorShaderSlowFrames(&stream, &reader);
+}
+
+fn runShaderStop(host: []const u8, port: u16) !void {
+    std.debug.print("Stopping shader and clearing display...\n", .{});
+    std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
+    var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
+    defer stream.close();
+    var reader_buffer: [16 * 1024]u8 = undefined;
+    var reader = stream.reader(&reader_buffer);
+    std.debug.print("Connected.\n", .{});
+
+    try writeV3Header(&stream, v3_cmd_stop_shader, 0);
+    const response = try readV3StatusResponse(&reader, v3_cmd_stop_shader);
+    if (response.status != 0) {
+        std.debug.print(
+            "Shader stop failed: v3 status={d} ({s})\n",
+            .{ response.status, v3StatusName(response.status) },
+        );
+        return error.V3CommandFailed;
+    }
+    std.debug.print("Shader stopped and display cleared.\n", .{});
 }
 
 fn clearDisplayOnExit(client: *led.TcpClient, display: *led.DisplayBuffer) !void {
@@ -535,7 +569,7 @@ fn parseRunConfig(args: anytype) !RunConfig {
     }
 
     switch (run_config.effect) {
-        .demo, .running_dot, .soap_bubbles, .campfire, .aurora_ribbons, .rain_ripple, .native_shader_activate => {
+        .demo, .running_dot, .soap_bubbles, .campfire, .aurora_ribbons, .rain_ripple, .native_shader_activate, .stop => {
             if (args.next() != null) return error.TooManyArguments;
         },
         .health_test => {
@@ -607,12 +641,11 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
     if (std.mem.eql(u8, effect_arg, "bytecode-upload")) return .bytecode_upload;
     if (std.mem.eql(u8, effect_arg, "firmware-upload")) return .firmware_upload;
     if (std.mem.eql(u8, effect_arg, "native-shader-activate")) return .native_shader_activate;
+    if (std.mem.eql(u8, effect_arg, "stop")) return .stop;
     return error.UnknownEffect;
 }
 
-fn readStreamExact(stream: *std.net.Stream, buffer: []u8) !void {
-    var reader_buffer: [256]u8 = undefined;
-    var reader = stream.reader(&reader_buffer);
+fn readStreamExact(reader: *std.net.Stream.Reader, buffer: []u8) !void {
     reader.interface().readSliceAll(buffer) catch |err| switch (err) {
         error.ReadFailed => return reader.getError() orelse error.Unexpected,
         else => return err,
@@ -652,9 +685,9 @@ fn writeV3Header(stream: *std.net.Stream, cmd: u8, payload_len: u32) !void {
     try stream.writeAll(&header);
 }
 
-fn readV3StatusResponse(stream: *std.net.Stream, expected_cmd: u8) !V3StatusResponse {
+fn readV3StatusResponse(reader: *std.net.Stream.Reader, expected_cmd: u8) !V3StatusResponse {
     var response_header: [led.tcp_client.header_len]u8 = undefined;
-    try readStreamExact(stream, response_header[0..]);
+    try readStreamExact(reader, response_header[0..]);
     if (!std.mem.eql(u8, response_header[0..4], "LEDS")) return error.InvalidV3Response;
     if (response_header[4] != v3_protocol_version) return error.InvalidV3Response;
     if (response_header[9] != (expected_cmd | v3_response_flag)) return error.InvalidV3Response;
@@ -663,9 +696,9 @@ fn readV3StatusResponse(stream: *std.net.Stream, expected_cmd: u8) !V3StatusResp
     if (response_payload_len < 1) return error.InvalidV3Response;
 
     var status_byte: [1]u8 = undefined;
-    try readStreamExact(stream, status_byte[0..]);
+    try readStreamExact(reader, status_byte[0..]);
     if (response_payload_len > 1) {
-        try drainStream(stream, response_payload_len - 1);
+        try drainStream(reader, response_payload_len - 1);
     }
     return .{
         .status = status_byte[0],
@@ -673,11 +706,11 @@ fn readV3StatusResponse(stream: *std.net.Stream, expected_cmd: u8) !V3StatusResp
     };
 }
 
-fn queryV3Status(stream: *std.net.Stream) !V3QueryStatus {
+fn queryV3Status(stream: *std.net.Stream, reader: *std.net.Stream.Reader) !V3QueryStatus {
     try writeV3Header(stream, v3_cmd_query_default_hook, 0);
 
     var response_header: [led.tcp_client.header_len]u8 = undefined;
-    try readStreamExact(stream, response_header[0..]);
+    try readStreamExact(reader, response_header[0..]);
     if (!std.mem.eql(u8, response_header[0..4], "LEDS")) return error.InvalidV3Response;
     if (response_header[4] != v3_protocol_version) return error.InvalidV3Response;
     if (response_header[9] != (v3_cmd_query_default_hook | v3_response_flag)) return error.InvalidV3Response;
@@ -686,16 +719,16 @@ fn queryV3Status(stream: *std.net.Stream) !V3QueryStatus {
     if (response_payload_len < 1) return error.InvalidV3Response;
 
     var status_byte: [1]u8 = undefined;
-    try readStreamExact(stream, status_byte[0..]);
+    try readStreamExact(reader, status_byte[0..]);
 
     const response_data_len = response_payload_len - 1;
     var payload: [20]u8 = undefined;
     if (response_data_len > payload.len) {
-        try drainStream(stream, response_data_len);
+        try drainStream(reader, response_data_len);
         return error.InvalidV3Response;
     }
     if (response_data_len > 0) {
-        try readStreamExact(stream, payload[0..response_data_len]);
+        try readStreamExact(reader, payload[0..response_data_len]);
     }
 
     if (status_byte[0] != 0) {
@@ -751,8 +784,21 @@ fn drainStdinInput() void {
     _ = std.posix.read(std.posix.STDIN_FILENO, scratch[0..]) catch {};
 }
 
-fn monitorShaderSlowFrames(stream: *std.net.Stream) !void {
-    var status = queryV3Status(stream) catch |err| switch (err) {
+fn windowsWaitForEnter(stop_requested: *std.atomic.Value(bool)) void {
+    var stdin_file = std.fs.File.stdin();
+    var one: [1]u8 = undefined;
+    while (true) {
+        const read_len = stdin_file.read(one[0..]) catch return;
+        if (read_len == 0) return;
+        if (one[0] == '\r' or one[0] == '\n') {
+            stop_requested.store(true, .seq_cst);
+            return;
+        }
+    }
+}
+
+fn monitorShaderSlowFrames(stream: *std.net.Stream, reader: *std.net.Stream.Reader) !void {
+    var status = queryV3Status(stream, reader) catch |err| switch (err) {
         error.V3CommandFailed => {
             std.debug.print("Shader monitor query failed.\n", .{});
             return;
@@ -769,15 +815,28 @@ fn monitorShaderSlowFrames(stream: *std.net.Stream) !void {
     var last_slow_frame_count = status.slow_frame_count;
     var last_frame_count = status.frame_count;
     var last_fps_time_ms = std.time.milliTimestamp();
+    var windows_stop_requested = std.atomic.Value(bool).init(false);
+    if (builtin.os.tag == .windows) {
+        const stdin_thread = try std.Thread.spawn(.{}, windowsWaitForEnter, .{&windows_stop_requested});
+        stdin_thread.detach();
+    }
 
     while (true) {
-        if (try pollStdinForEnter(500)) {
-            drainStdinInput();
-            std.debug.print("Stopped shader monitor.\n", .{});
-            return;
+        if (builtin.os.tag == .windows) {
+            std.Thread.sleep(500 * std.time.ns_per_ms);
+            if (windows_stop_requested.load(.seq_cst)) {
+                std.debug.print("Stopped shader monitor.\n", .{});
+                return;
+            }
+        } else {
+            if (try pollStdinForEnter(500)) {
+                drainStdinInput();
+                std.debug.print("Stopped shader monitor.\n", .{});
+                return;
+            }
         }
 
-        status = queryV3Status(stream) catch |err| switch (err) {
+        status = queryV3Status(stream, reader) catch |err| switch (err) {
             error.V3CommandFailed => {
                 std.debug.print("Shader monitor query failed.\n", .{});
                 return;
@@ -807,13 +866,13 @@ fn monitorShaderSlowFrames(stream: *std.net.Stream) !void {
     }
 }
 
-fn drainStream(stream: *std.net.Stream, len: u32) !void {
+fn drainStream(reader: *std.net.Stream.Reader, len: u32) !void {
     var remaining = len;
     var scratch: [256]u8 = undefined;
     while (remaining > 0) {
         const chunk_u32 = @min(remaining, @as(u32, scratch.len));
         const chunk: usize = @intCast(chunk_u32);
-        try readStreamExact(stream, scratch[0..chunk]);
+        try readStreamExact(reader, scratch[0..chunk]);
         remaining -= chunk_u32;
     }
 }
@@ -857,6 +916,7 @@ test "parseEffectKind accepts known effect names" {
     try std.testing.expectEqual(.bytecode_upload, try parseEffectKind("bytecode-upload"));
     try std.testing.expectEqual(.firmware_upload, try parseEffectKind("firmware-upload"));
     try std.testing.expectEqual(.native_shader_activate, try parseEffectKind("native-shader-activate"));
+    try std.testing.expectEqual(.stop, try parseEffectKind("stop"));
 }
 
 test "parseMaybeU16 returns null for non-numeric strings" {
@@ -958,6 +1018,21 @@ test "parseRunConfig parses native-shader-activate mode" {
 test "parseRunConfig native-shader-activate rejects extra args" {
     var args = TestArgs{
         .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "native-shader-activate", "extra" },
+    };
+    try std.testing.expectError(error.TooManyArguments, parseRunConfig(&args));
+}
+
+test "parseRunConfig parses stop mode" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "stop" },
+    };
+    const run_config = try parseRunConfig(&args);
+    try std.testing.expectEqual(.stop, run_config.effect);
+}
+
+test "parseRunConfig stop rejects extra args" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "stop", "extra" },
     };
     try std.testing.expectError(error.TooManyArguments, parseRunConfig(&args));
 }
