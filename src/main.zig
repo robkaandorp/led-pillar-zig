@@ -14,6 +14,7 @@ const EffectKind = enum {
     rain_ripple,
     infinite_line,
     infinite_lines,
+    dsl_compile,
     dsl_file,
     bytecode_upload,
     firmware_upload,
@@ -75,6 +76,10 @@ pub fn main() !void {
             run_config.port,
             run_config.bytecode_file_path orelse return error.MissingBytecodePath,
         );
+        return;
+    }
+    if (run_config.effect == .dsl_compile) {
+        try runDslCompileOnly(run_config.dsl_file_path orelse return error.MissingDslPath);
         return;
     }
     if (run_config.effect == .firmware_upload) {
@@ -157,6 +162,7 @@ pub fn main() !void {
             run_config.dsl_file_path orelse return error.MissingDslPath,
             &shutdown_requested,
         ),
+        .dsl_compile => unreachable,
         .bytecode_upload => unreachable,
         .firmware_upload => unreachable,
         .native_shader_activate => unreachable,
@@ -325,6 +331,19 @@ fn clearDisplayOnExit(client: *led.TcpClient, display: *led.DisplayBuffer) !void
     try client.finishPendingFrame();
 }
 
+fn runDslCompileOnly(dsl_file_path: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const source = try std.fs.cwd().readFileAlloc(arena.allocator(), dsl_file_path, std.math.maxInt(usize));
+    const program = try led.dsl_parser.parseAndValidate(arena.allocator(), source);
+    var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
+    defer evaluator.deinit();
+    try writeDslBytecodeReference(&evaluator, dsl_file_path);
+    try writeDslCReference(program, dsl_file_path);
+    std.debug.print("DSL compile complete for {s}; wrote bytecode and emitted C reference.\n", .{dsl_file_path});
+}
+
 fn runDslFileEffect(
     client: *led.TcpClient,
     display: *led.DisplayBuffer,
@@ -480,10 +499,20 @@ fn posixCtrlHandler(_: i32) callconv(.c) void {
 
 fn parseRunConfig(args: anytype) !RunConfig {
     _ = args.next();
-    const host = args.next() orelse return error.MissingHost;
+    const host_or_mode = args.next() orelse return error.MissingHost;
+
+    if (std.mem.eql(u8, host_or_mode, "dsl-compile")) {
+        const dsl_file_path = args.next() orelse return error.MissingDslPath;
+        if (args.next() != null) return error.TooManyArguments;
+        return .{
+            .host = "127.0.0.1",
+            .effect = .dsl_compile,
+            .dsl_file_path = dsl_file_path,
+        };
+    }
 
     var run_config = RunConfig{
-        .host = host,
+        .host = host_or_mode,
     };
 
     var pending_effect_or_param = args.next();
@@ -542,6 +571,10 @@ fn parseRunConfig(args: anytype) !RunConfig {
             }
             if (args.next() != null) return error.TooManyArguments;
         },
+        .dsl_compile => {
+            run_config.dsl_file_path = args.next() orelse return error.MissingDslPath;
+            if (args.next() != null) return error.TooManyArguments;
+        },
         .dsl_file => {
             run_config.dsl_file_path = args.next() orelse return error.MissingDslPath;
             if (args.next() != null) return error.TooManyArguments;
@@ -569,6 +602,7 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
     if (std.mem.eql(u8, effect_arg, "rain-ripple")) return .rain_ripple;
     if (std.mem.eql(u8, effect_arg, "infinite-line")) return .infinite_line;
     if (std.mem.eql(u8, effect_arg, "infinite-lines")) return .infinite_lines;
+    if (std.mem.eql(u8, effect_arg, "dsl-compile")) return .dsl_compile;
     if (std.mem.eql(u8, effect_arg, "dsl-file")) return .dsl_file;
     if (std.mem.eql(u8, effect_arg, "bytecode-upload")) return .bytecode_upload;
     if (std.mem.eql(u8, effect_arg, "firmware-upload")) return .firmware_upload;
@@ -577,12 +611,12 @@ fn parseEffectKind(effect_arg: []const u8) !EffectKind {
 }
 
 fn readStreamExact(stream: *std.net.Stream, buffer: []u8) !void {
-    var offset: usize = 0;
-    while (offset < buffer.len) {
-        const read_len = try stream.read(buffer[offset..]);
-        if (read_len == 0) return error.EndOfStream;
-        offset += read_len;
-    }
+    var reader_buffer: [256]u8 = undefined;
+    var reader = stream.reader(&reader_buffer);
+    reader.interface().readSliceAll(buffer) catch |err| switch (err) {
+        error.ReadFailed => return reader.getError() orelse error.Unexpected,
+        else => return err,
+    };
 }
 
 const V3StatusResponse = struct {
@@ -818,6 +852,7 @@ test "parseEffectKind accepts known effect names" {
     try std.testing.expectEqual(.rain_ripple, try parseEffectKind("rain-ripple"));
     try std.testing.expectEqual(.infinite_line, try parseEffectKind("infinite-line"));
     try std.testing.expectEqual(.infinite_lines, try parseEffectKind("infinite-lines"));
+    try std.testing.expectEqual(.dsl_compile, try parseEffectKind("dsl-compile"));
     try std.testing.expectEqual(.dsl_file, try parseEffectKind("dsl-file"));
     try std.testing.expectEqual(.bytecode_upload, try parseEffectKind("bytecode-upload"));
     try std.testing.expectEqual(.firmware_upload, try parseEffectKind("firmware-upload"));
@@ -848,6 +883,22 @@ test "parseRunConfig parses dsl-file mode" {
     const run_config = try parseRunConfig(&args);
     try std.testing.expectEqual(.dsl_file, run_config.effect);
     try std.testing.expectEqualStrings("examples\\dsl\\v1\\aurora.dsl", run_config.dsl_file_path.?);
+}
+
+test "parseRunConfig parses compile-only dsl mode without host" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "dsl-compile", "examples\\dsl\\v1\\aurora.dsl" },
+    };
+    const run_config = try parseRunConfig(&args);
+    try std.testing.expectEqual(.dsl_compile, run_config.effect);
+    try std.testing.expectEqualStrings("examples\\dsl\\v1\\aurora.dsl", run_config.dsl_file_path.?);
+}
+
+test "parseRunConfig compile-only dsl mode requires path" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "dsl-compile" },
+    };
+    try std.testing.expectError(error.MissingDslPath, parseRunConfig(&args));
 }
 
 test "parseRunConfig dsl-file requires path" {

@@ -52,6 +52,7 @@ https://github.com/robkaandorp/tcp_led_stream
 
 - Build executable: `zig build`
 - Run sender with selectable effect: `zig build run -- <host> [port] [frame_rate_hz] [effect] [effect_args...]`
+- Compile DSL only (no server connection): `zig build run -- dsl-compile <path-to-effect.dsl>`
 - Effects:
   - `demo` (default): pixel health test, then running dot
   - `health-test [hold_seconds]`
@@ -63,15 +64,17 @@ https://github.com/robkaandorp/tcp_led_stream
   - `infinite-line [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
   - `infinite-lines [line_count] [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
   - `dsl-file <path-to-effect.dsl>` (also writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits auto-wired native shader C to `esp32_firmware/main/generated/dsl_shader_generated.c`)
+  - `dsl-compile <path-to-effect.dsl>` (compile-only mode; writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits `esp32_firmware/main/generated/dsl_shader_generated.c` without opening TCP)
   - `bytecode-upload <path-to-bytecode.bin|path-to-effect.dsl>` (protocol v3 bytecode upload + activate; `.dsl` is compiled first and also emits `esp32_firmware/main/generated/dsl_shader_generated.c`, then monitors shader FPS + slow frames until you press Enter)
   - `native-shader-activate` (protocol v3 command to activate built-in firmware native C shader; monitors shader FPS + slow frames until you press Enter)
   - `firmware-upload <path-to-led_pillar_firmware.bin>` (protocol v3 push OTA upload command)
 - On normal exit or `Ctrl+C`, the sender clears the LED display to black before disconnecting.
 - Run console TCP display simulator: `zig build simulator -- [port]`
 - The simulator renders the matrix and prints live stats (FPS, bytes/s, total frames, total bytes) below it.
+- It now also handles v3 shader control commands (`bytecode-upload`, `native-shader-activate`, `query`) and renders frames by executing `esp32_firmware/main/generated/dsl_shader_generated.c`.
 - Run full tests: `zig build test`
-- Run tests in the library module: `zig test src\root.zig`
-- Run tests in the executable module: `zig test src\main.zig`
+- Run tests in the library module: `zig build test-root`
+- Run tests in the executable module: `zig build test-main`
 - Run a single test by name filter: `zig test src\root.zig --test-filter "<test name>"`
 - DSL feasibility research and example syntax: `DSL_FEASIBILITY_FINDINGS.md`
 - DSL v1 parser language spec: `DSL_V1_LANGUAGE.md`

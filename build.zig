@@ -100,6 +100,18 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    simulator_exe.linkLibC();
+    simulator_exe.addCSourceFile(.{
+        .file = b.path("esp32_firmware/main/generated/dsl_shader_generated.c"),
+        .flags = &.{
+            "-O3",
+            "-ffast-math",
+            "-fno-math-errno",
+        },
+    });
+    if (target.result.os.tag != .windows) {
+        simulator_exe.linkSystemLibrary("m");
+    }
     b.installArtifact(simulator_exe);
 
     // This creates a top level step. Top level steps have a name and can be
@@ -155,6 +167,12 @@ pub fn build(b: *std.Build) void {
 
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);
+
+    const test_root_step = b.step("test-root", "Run library module tests");
+    test_root_step.dependOn(&run_mod_tests.step);
+
+    const test_main_step = b.step("test-main", "Run executable module tests");
+    test_main_step.dependOn(&run_exe_tests.step);
 
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will

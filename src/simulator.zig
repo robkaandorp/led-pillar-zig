@@ -13,6 +13,73 @@ const Rgb = struct {
     b: u8,
 };
 
+const EmittedShaderColor = extern struct {
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+};
+
+extern fn dsl_shader_eval_pixel(
+    time_seconds: f32,
+    frame_counter: f32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    out_color: *EmittedShaderColor,
+) callconv(.c) void;
+
+const ShaderSource = enum {
+    none,
+    bytecode,
+    native,
+};
+
+const V3State = struct {
+    lock: std.Thread.Mutex = .{},
+    default_shader_persisted: bool = false,
+    has_uploaded_program: bool = false,
+    shader_active: bool = false,
+    default_shader_faulted: bool = false,
+    bytecode_blob_len: u32 = 0,
+    shader_slow_frame_count: u32 = 0,
+    shader_last_slow_frame_ms: u32 = 0,
+    shader_frame_count: u32 = 0,
+    shader_source: ShaderSource = .none,
+};
+
+const ShaderRenderContext = struct {
+    width: u16,
+    height: u16,
+    payload: []u8,
+    state: *V3State,
+    render_lock: *std.Thread.Mutex,
+    stop_flag: *const std.atomic.Value(bool),
+};
+
+const v3_protocol_version: u8 = 0x03;
+const v3_cmd_upload_bytecode: u8 = 0x01;
+const v3_cmd_activate_shader: u8 = 0x02;
+const v3_cmd_set_default_hook: u8 = 0x03;
+const v3_cmd_clear_default_hook: u8 = 0x04;
+const v3_cmd_query_default_hook: u8 = 0x05;
+const v3_cmd_upload_firmware: u8 = 0x06;
+const v3_cmd_activate_native_shader: u8 = 0x07;
+const v3_response_flag: u8 = 0x80;
+
+const v3_status_ok: u8 = 0;
+const v3_status_invalid_arg: u8 = 1;
+const v3_status_unsupported_cmd: u8 = 2;
+const v3_status_too_large: u8 = 3;
+const v3_status_not_ready: u8 = 4;
+const v3_status_vm_error: u8 = 5;
+const v3_status_internal: u8 = 6;
+
+const v3_status_payload_len: usize = 20;
+const v3_max_bytecode_blob: usize = 64 * 1024;
+const shader_frame_interval_ns: u64 = 25 * std.time.ns_per_ms;
+
 const SimulatorStats = struct {
     timer: std.time.Timer,
     total_frames: u64 = 0,
@@ -50,7 +117,8 @@ pub fn runServer(port: u16, width: u16, height: u16) !void {
     if (width == 0 or height == 0) return error.InvalidDimensions;
 
     const expected_pixels = try std.math.mul(u32, @as(u32, width), @as(u32, height));
-    const max_payload_len = try std.math.mul(usize, @as(usize, expected_pixels), 4);
+    const frame_payload_len = try std.math.mul(usize, @as(usize, expected_pixels), 4);
+    const max_payload_len = @max(frame_payload_len, v3_max_bytecode_blob);
     const payload_buffer = try std.heap.page_allocator.alloc(u8, max_payload_len);
     defer std.heap.page_allocator.free(payload_buffer);
 
@@ -83,6 +151,27 @@ fn serveConnection(
     var header_buf: [tcp_client.header_len]u8 = undefined;
     var first_frame = true;
     var stats = try SimulatorStats.init();
+    var v3_state = V3State{};
+    var render_lock: std.Thread.Mutex = .{};
+
+    const shader_payload_len = try std.math.mul(usize, @as(usize, expected_pixels), 3);
+    const shader_payload = try std.heap.page_allocator.alloc(u8, shader_payload_len);
+    defer std.heap.page_allocator.free(shader_payload);
+
+    var shader_stop = std.atomic.Value(bool).init(false);
+    var shader_ctx = ShaderRenderContext{
+        .width = width,
+        .height = height,
+        .payload = shader_payload,
+        .state = &v3_state,
+        .render_lock = &render_lock,
+        .stop_flag = &shader_stop,
+    };
+    var shader_thread = try std.Thread.spawn(.{}, shaderRenderLoop, .{&shader_ctx});
+    defer {
+        shader_stop.store(true, .seq_cst);
+        shader_thread.join();
+    }
 
     while (true) {
         readExact(&reader, header_buf[0..]) catch |err| switch (err) {
@@ -90,16 +179,251 @@ fn serveConnection(
             else => return err,
         };
 
+        if (!std.mem.eql(u8, header_buf[0..4], "LEDS")) return error.InvalidMagic;
+        const protocol_version = header_buf[4];
+        if (protocol_version == v3_protocol_version) {
+            const payload_len_u32 = readBeU32(header_buf[5..9]);
+            const payload_len: usize = @intCast(payload_len_u32);
+            const cmd = header_buf[9];
+
+            if (payload_len > payload_buffer.len) {
+                try drainExact(&reader, payload_len);
+                try sendV3Response(stream, cmd, v3_status_too_large, &.{});
+                continue;
+            }
+            if (payload_len > 0) {
+                try readExact(&reader, payload_buffer[0..payload_len]);
+            }
+            try handleV3Message(stream, &v3_state, cmd, payload_buffer[0..payload_len]);
+            continue;
+        }
+
         const header = try parseHeader(header_buf[0..], expected_pixels);
         if (header.payload_len > payload_buffer.len) return error.FrameTooLarge;
 
         try readExact(&reader, payload_buffer[0..header.payload_len]);
         stats.recordFrame(tcp_client.header_len + header.payload_len);
-        try renderFrame(width, height, header.pixel_format, payload_buffer[0..header.payload_len], &stats, first_frame);
+        {
+            render_lock.lock();
+            defer render_lock.unlock();
+            try renderFrame(width, height, header.pixel_format, payload_buffer[0..header.payload_len], &stats, first_frame);
+        }
         if (header.protocol_version == tcp_client.protocol_version) {
             try stream.writeAll(&[_]u8{tcp_client.ack_byte});
         }
         first_frame = false;
+    }
+}
+
+fn handleV3Message(stream: *std.net.Stream, state: *V3State, cmd: u8, payload: []const u8) !void {
+    var response_payload: [v3_status_payload_len]u8 = undefined;
+    var response_len: usize = 0;
+    const status = switch (cmd) {
+        v3_cmd_upload_bytecode => handleV3Upload(state, payload),
+        v3_cmd_activate_shader => if (payload.len == 0) handleV3Activate(state, .bytecode) else v3_status_invalid_arg,
+        v3_cmd_set_default_hook => handleV3SetHook(state, payload),
+        v3_cmd_clear_default_hook => handleV3ClearHook(state, payload),
+        v3_cmd_query_default_hook => handleV3Query(state, payload, response_payload[0..], &response_len),
+        v3_cmd_activate_native_shader => if (payload.len == 0) handleV3Activate(state, .native) else v3_status_invalid_arg,
+        v3_cmd_upload_firmware => v3_status_unsupported_cmd,
+        else => v3_status_unsupported_cmd,
+    };
+
+    try sendV3Response(stream, cmd, status, response_payload[0..response_len]);
+}
+
+fn handleV3Upload(state: *V3State, payload: []const u8) u8 {
+    if (payload.len == 0) return v3_status_invalid_arg;
+    if (payload.len > v3_max_bytecode_blob) return v3_status_too_large;
+
+    state.lock.lock();
+    defer state.lock.unlock();
+    state.has_uploaded_program = true;
+    state.bytecode_blob_len = @intCast(payload.len);
+    state.shader_active = false;
+    state.shader_source = .none;
+    return v3_status_ok;
+}
+
+fn handleV3Activate(state: *V3State, source: ShaderSource) u8 {
+    state.lock.lock();
+    defer state.lock.unlock();
+    if (source == .bytecode and !state.has_uploaded_program) return v3_status_not_ready;
+    state.shader_active = true;
+    state.shader_source = source;
+    state.shader_slow_frame_count = 0;
+    state.shader_last_slow_frame_ms = 0;
+    state.shader_frame_count = 0;
+    return v3_status_ok;
+}
+
+fn handleV3SetHook(state: *V3State, payload: []const u8) u8 {
+    if (payload.len != 0) return v3_status_invalid_arg;
+
+    state.lock.lock();
+    defer state.lock.unlock();
+    if (!state.has_uploaded_program or state.bytecode_blob_len == 0) return v3_status_not_ready;
+    state.default_shader_persisted = true;
+    state.default_shader_faulted = false;
+    return v3_status_ok;
+}
+
+fn handleV3ClearHook(state: *V3State, payload: []const u8) u8 {
+    if (payload.len != 0) return v3_status_invalid_arg;
+
+    state.lock.lock();
+    defer state.lock.unlock();
+    state.default_shader_persisted = false;
+    state.default_shader_faulted = false;
+    return v3_status_ok;
+}
+
+fn handleV3Query(state: *V3State, payload: []const u8, response_payload: []u8, out_len: *usize) u8 {
+    if (payload.len != 0) return v3_status_invalid_arg;
+    if (response_payload.len < v3_status_payload_len) return v3_status_internal;
+
+    state.lock.lock();
+    defer state.lock.unlock();
+    response_payload[0] = @intFromBool(state.default_shader_persisted);
+    response_payload[1] = @intFromBool(state.has_uploaded_program);
+    response_payload[2] = @intFromBool(state.shader_active);
+    response_payload[3] = @intFromBool(state.default_shader_faulted);
+    writeBeU32(response_payload[4..8], state.bytecode_blob_len);
+    writeBeU32(response_payload[8..12], state.shader_slow_frame_count);
+    writeBeU32(response_payload[12..16], state.shader_last_slow_frame_ms);
+    writeBeU32(response_payload[16..20], state.shader_frame_count);
+    out_len.* = v3_status_payload_len;
+    return v3_status_ok;
+}
+
+fn sendV3Response(stream: *std.net.Stream, cmd: u8, status: u8, payload: []const u8) !void {
+    if (payload.len > std.math.maxInt(u32) - 1) return error.PayloadTooLarge;
+
+    var header = [_]u8{ 'L', 'E', 'D', 'S', v3_protocol_version, 0, 0, 0, 0, cmd | v3_response_flag };
+    writeBeU32(header[5..9], @as(u32, @intCast(payload.len + 1)));
+    try stream.writeAll(&header);
+    try stream.writeAll(&[_]u8{status});
+    if (payload.len > 0) {
+        try stream.writeAll(payload);
+    }
+}
+
+fn shaderRenderLoop(context: *ShaderRenderContext) void {
+    var stats = SimulatorStats.init() catch return;
+    var timer = std.time.Timer.start() catch return;
+    var frame_counter: u32 = 0;
+    var was_rendering = false;
+    var clear_screen = true;
+
+    while (!context.stop_flag.load(.seq_cst)) {
+        const frame_start_ns = timer.read();
+
+        var should_render = false;
+        {
+            context.state.lock.lock();
+            defer context.state.lock.unlock();
+            should_render = context.state.shader_active and context.state.shader_source != .none;
+            if (!should_render) {
+                frame_counter = 0;
+                context.state.shader_frame_count = 0;
+            }
+        }
+
+        if (should_render) {
+            if (!was_rendering) {
+                clear_screen = true;
+            }
+            const time_seconds: f32 = @floatCast(@as(f64, @floatFromInt(frame_start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
+            renderEmittedShaderFrame(
+                context.width,
+                context.height,
+                time_seconds,
+                frame_counter,
+                context.payload,
+            );
+            stats.recordFrame(tcp_client.header_len + context.payload.len);
+
+            context.render_lock.lock();
+            _ = renderFrame(
+                context.width,
+                context.height,
+                .rgb,
+                context.payload,
+                &stats,
+                clear_screen,
+            ) catch {};
+            context.render_lock.unlock();
+
+            clear_screen = false;
+            const frame_elapsed_ns = timer.read() - frame_start_ns;
+
+            context.state.lock.lock();
+            if (frame_elapsed_ns > 200 * std.time.ns_per_ms) {
+                const slow_ms = frame_elapsed_ns / std.time.ns_per_ms;
+                context.state.shader_last_slow_frame_ms = @intCast(@min(slow_ms, @as(u64, std.math.maxInt(u32))));
+                context.state.shader_slow_frame_count +%= 1;
+            }
+            frame_counter +%= 1;
+            context.state.shader_frame_count = frame_counter;
+            context.state.lock.unlock();
+            was_rendering = true;
+        } else {
+            was_rendering = false;
+        }
+
+        const loop_elapsed_ns = timer.read() - frame_start_ns;
+        if (loop_elapsed_ns < shader_frame_interval_ns) {
+            std.Thread.sleep(shader_frame_interval_ns - loop_elapsed_ns);
+        } else {
+            std.Thread.yield() catch {};
+        }
+    }
+}
+
+fn renderEmittedShaderFrame(width: u16, height: u16, time_seconds: f32, frame_counter: u32, payload: []u8) void {
+    const pixel_count = @as(usize, width) * @as(usize, height);
+    const required_len = pixel_count * 3;
+    if (payload.len < required_len) return;
+
+    const width_f: f32 = @floatFromInt(width);
+    const height_f: f32 = @floatFromInt(height);
+    const frame_f: f32 = @floatFromInt(frame_counter);
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            var color = EmittedShaderColor{ .r = 0, .g = 0, .b = 0, .a = 0 };
+            dsl_shader_eval_pixel(
+                time_seconds,
+                frame_f,
+                @floatFromInt(x),
+                @floatFromInt(y),
+                width_f,
+                height_f,
+                &color,
+            );
+            const offset = @as(usize, physicalPixelIndex(height, x, y)) * 3;
+            payload[offset] = channelToU8(color.r);
+            payload[offset + 1] = channelToU8(color.g);
+            payload[offset + 2] = channelToU8(color.b);
+        }
+    }
+}
+
+fn channelToU8(value: f32) u8 {
+    const clamped = std.math.clamp(value, 0.0, 1.0);
+    const scaled = clamped * 255.0 + 0.5;
+    const rounded: u32 = @intFromFloat(scaled);
+    return @intCast(@min(rounded, @as(u32, 255)));
+}
+
+fn drainExact(reader: *std.net.Stream.Reader, len: usize) !void {
+    var remaining = len;
+    var scratch: [256]u8 = undefined;
+    while (remaining > 0) {
+        const chunk = @min(remaining, scratch.len);
+        try readExact(reader, scratch[0..chunk]);
+        remaining -= chunk;
     }
 }
 
@@ -119,10 +443,7 @@ fn parseHeader(header: []const u8, expected_pixels: u32) !FrameHeader {
         else => return error.UnsupportedProtocolVersion,
     }
 
-    const count: u32 = (@as(u32, header[5]) << 24) |
-        (@as(u32, header[6]) << 16) |
-        (@as(u32, header[7]) << 8) |
-        @as(u32, header[8]);
+    const count = readBeU32(header[5..9]);
     if (count != expected_pixels) return error.UnexpectedPixelCount;
 
     const pixel_format = try parsePixelFormat(header[9]);
@@ -206,6 +527,17 @@ fn decodePixel(format: tcp_client.PixelFormat, pixel: []const u8) Rgb {
     };
 }
 
+fn readBeU32(bytes: []const u8) u32 {
+    return (@as(u32, bytes[0]) << 24) | (@as(u32, bytes[1]) << 16) | (@as(u32, bytes[2]) << 8) | @as(u32, bytes[3]);
+}
+
+fn writeBeU32(bytes: []u8, value: u32) void {
+    bytes[0] = @intCast((value >> 24) & 0xff);
+    bytes[1] = @intCast((value >> 16) & 0xff);
+    bytes[2] = @intCast((value >> 8) & 0xff);
+    bytes[3] = @intCast(value & 0xff);
+}
+
 fn ratePerSecond(count: u64, elapsed_ns: u64, scale: u64) u64 {
     if (elapsed_ns == 0) return 0;
     return (count * scale * @as(u64, std.time.ns_per_s)) / elapsed_ns;
@@ -247,4 +579,37 @@ test "decodePixel maps RGBW white into RGB channels" {
 test "ratePerSecond computes scaled values" {
     try std.testing.expectEqual(@as(u64, 400), ratePerSecond(40, @as(u64, std.time.ns_per_s), 10));
     try std.testing.expectEqual(@as(u64, 8000), ratePerSecond(8000, @as(u64, std.time.ns_per_s), 1));
+}
+
+test "v3 upload requires non-empty payload" {
+    var state = V3State{};
+    try std.testing.expectEqual(v3_status_invalid_arg, handleV3Upload(&state, &.{}));
+}
+
+test "v3 bytecode activate requires upload first" {
+    var state = V3State{};
+    try std.testing.expectEqual(v3_status_not_ready, handleV3Activate(&state, .bytecode));
+}
+
+test "v3 query payload includes frame metrics fields" {
+    var state = V3State{
+        .default_shader_persisted = true,
+        .has_uploaded_program = true,
+        .shader_active = true,
+        .bytecode_blob_len = 1234,
+        .shader_slow_frame_count = 5,
+        .shader_last_slow_frame_ms = 42,
+        .shader_frame_count = 99,
+    };
+    var payload: [v3_status_payload_len]u8 = undefined;
+    var out_len: usize = 0;
+    try std.testing.expectEqual(v3_status_ok, handleV3Query(&state, &.{}, payload[0..], &out_len));
+    try std.testing.expectEqual(v3_status_payload_len, out_len);
+    try std.testing.expectEqual(@as(u8, 1), payload[0]);
+    try std.testing.expectEqual(@as(u8, 1), payload[1]);
+    try std.testing.expectEqual(@as(u8, 1), payload[2]);
+    try std.testing.expectEqual(@as(u32, 1234), readBeU32(payload[4..8]));
+    try std.testing.expectEqual(@as(u32, 5), readBeU32(payload[8..12]));
+    try std.testing.expectEqual(@as(u32, 42), readBeU32(payload[12..16]));
+    try std.testing.expectEqual(@as(u32, 99), readBeU32(payload[16..20]));
 }

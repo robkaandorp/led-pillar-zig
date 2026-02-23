@@ -92,43 +92,16 @@ static inline dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {
     };
 }
 
-/* Generated from effect: aurora_ribbons_classic_v1 */
-void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, dsl_color_t *out_color) {    const float dsl_let_t_warp_0 = (time * 0.120000f);
-    const float dsl_let_t_hue_1 = (time * 0.200000f);
-    const float dsl_let_t_breathe_2 = (time * 0.350000f);
-    const float dsl_let_t_crest_3 = (time * 0.500000f);
-    const float dsl_let_t_accent_4 = (time * 0.550000f);
+/* Generated from effect: aurora_v1 */
+void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, dsl_color_t *out_color) {    const float dsl_param_speed_0 = 0.280000f;
+    const float dsl_param_thickness_1 = 3.800000f;
+    const float dsl_param_alpha_scale_2 = 0.450000f;
     dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
-    /* layer ribbons */
-    const float dsl_let_theta_5 = ((x / width) * 6.28318530717958647692f);
-    for (int32_t dsl_iter_i_6 = 0; dsl_iter_i_6 < 4; dsl_iter_i_6++) {
-        const float dsl_index_i_7 = (float)dsl_iter_i_6;
-        const float dsl_let_layer_index_8 = dsl_index_i_7;
-        const float dsl_let_w0_9 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 0.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_w1_10 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 1.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_w2_11 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 2.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_w3_12 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 3.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_phase_13 = ((((0.000000f * dsl_let_w0_9) + (1.500000f * dsl_let_w1_10)) + (2.700000f * dsl_let_w2_11)) + (4.000000f * dsl_let_w3_12));
-        const float dsl_let_speed_14 = ((((0.280000f * dsl_let_w0_9) + (0.340000f * dsl_let_w1_10)) + (0.220000f * dsl_let_w2_11)) + (0.300000f * dsl_let_w3_12));
-        const float dsl_let_wave_15 = ((((0.900000f * dsl_let_w0_9) + (1.200000f * dsl_let_w1_10)) + (1.600000f * dsl_let_w2_11)) + (1.050000f * dsl_let_w3_12));
-        const float dsl_let_width_base_16 = ((((4.200000f * dsl_let_w0_9) + (3.800000f * dsl_let_w1_10)) + (3.200000f * dsl_let_w2_11)) + (2.900000f * dsl_let_w3_12));
-        const float dsl_let_alpha_scale_17 = (0.160000f + (dsl_let_layer_index_8 * 0.050000f));
-        const float dsl_let_warp_18 = (sinf((((dsl_let_theta_5 * 3.000000f) + dsl_let_t_warp_0) + (dsl_let_phase_13 * 0.500000f))) * (0.220000f * dsl_let_wave_15));
-        const float dsl_let_flow_19 = sinf((((dsl_let_theta_5 + (time * dsl_let_speed_14)) + dsl_let_phase_13) + dsl_let_warp_18));
-        const float dsl_let_sweep_20 = sinf(((((dsl_let_theta_5 * 2.000000f) - (time * (0.220000f + (dsl_let_speed_14 * 0.150000f)))) + (dsl_let_phase_13 * 0.700000f)) + dsl_let_warp_18));
-        const float dsl_let_base_21 = ((0.500000f + (0.340000f * dsl_let_flow_19)) + (0.080000f * dsl_let_warp_18));
-        const float dsl_let_centerline_22 = (((1.000000f - dsl_let_base_21) * (height - 1.000000f)) + (dsl_let_sweep_20 * 2.900000f));
-        const float dsl_let_breathing_23 = sinf(((dsl_let_t_breathe_2 + dsl_let_phase_13) + (dsl_let_layer_index_8 * 0.400000f)));
-        const float dsl_let_thickness_24 = (dsl_let_width_base_16 + (dsl_let_breathing_23 * 0.900000f));
-        const float dsl_let_band_d_25 = dsl_box((dsl_vec2_t){ .x = 0.000000f, .y = (y - dsl_let_centerline_22) }, (dsl_vec2_t){ .x = width, .y = dsl_let_thickness_24 });
-        const float dsl_let_band_alpha_26 = ((1.000000f - dsl_smoothstep(0.000000f, 1.900000f, dsl_let_band_d_25)) * dsl_let_alpha_scale_17);
-        const float dsl_let_hue_phase_27 = ((dsl_let_t_hue_1 + dsl_let_phase_13) + dsl_let_theta_5);
-        __dsl_out = dsl_blend_over((dsl_color_t){ .r = (0.180000f + (0.220000f * (0.500000f + (0.500000f * sinf((dsl_let_hue_phase_27 + 2.000000f)))))), .g = (0.420000f + (0.460000f * (0.500000f + (0.500000f * sinf(dsl_let_hue_phase_27))))), .b = (0.460000f + (0.420000f * (0.500000f + (0.500000f * sinf((dsl_let_hue_phase_27 + 4.000000f)))))), .a = dsl_let_band_alpha_26 }, __dsl_out);
-        const float dsl_let_accent_center_28 = (dsl_let_centerline_22 + (sinf((((dsl_let_theta_5 * 4.000000f) + dsl_let_t_accent_4) + dsl_let_phase_13)) * 1.300000f));
-        const float dsl_let_accent_d_29 = dsl_box((dsl_vec2_t){ .x = 0.000000f, .y = (y - dsl_let_accent_center_28) }, (dsl_vec2_t){ .x = width, .y = fmaxf(0.400000f, (dsl_let_thickness_24 * 0.260000f)) });
-        const float dsl_let_crest_30 = dsl_smoothstep(0.550000f, 1.000000f, sinf((((dsl_let_theta_5 * 2.000000f) + dsl_let_t_crest_3) + dsl_let_phase_13)));
-        const float dsl_let_accent_alpha_31 = (((1.000000f - dsl_smoothstep(0.000000f, 0.950000f, dsl_let_accent_d_29)) * dsl_let_crest_30) * 0.200000f);
-        __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.880000f, .g = 0.900000f, .b = 0.950000f, .a = dsl_let_accent_alpha_31 }, __dsl_out);
-    }
+    /* layer ribbon */
+    const float dsl_let_theta_3 = ((x / width) * 6.28318530717958647692f);
+    const float dsl_let_center_4 = ((height * 0.500000f) + (sinf((dsl_let_theta_3 + (time * dsl_param_speed_0))) * 6.000000f));
+    const float dsl_let_d_5 = dsl_box((dsl_vec2_t){ .x = 0.000000f, .y = (y - dsl_let_center_4) }, (dsl_vec2_t){ .x = width, .y = dsl_param_thickness_1 });
+    const float dsl_let_a_6 = ((1.000000f - dsl_smoothstep(0.000000f, 1.900000f, dsl_let_d_5)) * dsl_param_alpha_scale_2);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.350000f, .g = 0.950000f, .b = 0.750000f, .a = fminf(dsl_let_a_6, 1.000000f) }, __dsl_out);
     *out_color = __dsl_out;
 }
