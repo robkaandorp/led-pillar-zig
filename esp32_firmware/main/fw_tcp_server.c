@@ -683,6 +683,12 @@ static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state) {
     state->shader_frame_count = 0U;
     state->uniform_last_color_valid = false;
     xSemaphoreGive(state->state_lock);
+
+    /* Run micro-benchmarks when enabled (set FW_RUN_SHADER_BENCH=1 to enable). */
+#if defined(FW_RUN_SHADER_BENCH) && FW_RUN_SHADER_BENCH
+    fw_native_shader_run_benchmarks();
+#endif
+
     return FW_TCP_V3_STATUS_OK;
 }
 

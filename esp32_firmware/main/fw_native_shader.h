@@ -43,3 +43,9 @@ int fw_native_shader_render_frame(
     uint8_t *frame_buffer,
     size_t buffer_len
 );
+
+/**
+ * Run microbenchmarks for each math function used by DSL shaders.
+ * Logs per-function timing via ESP_LOGI.  Call once at shader activation.
+ */
+void fw_native_shader_run_benchmarks(void);
