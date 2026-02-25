@@ -7,13 +7,13 @@
 // ensure the visual never settles into a repeating state.
 effect dream_weaver_v1
 
-// time bases
-param t1 = time * 0.0809
-param t2 = time * 0.1311
-param t3 = time * 0.1918
+// time bases, offset by seed for unique starts
+param t1 = time * 0.0809 + seed * 100.0
+param t2 = time * 0.1311 + seed * 200.0
+param t3 = time * 0.1918 + seed * 300.0
 
 // vitality envelope (quiet vs burst)
-param vitality = clamp(sin(time * 0.083) + sin(time * 0.059) + sin(time * 0.037) - 1.3, 0.0, 1.0)
+param vitality = clamp(sin(time * 0.083 + seed * 55.0) + sin(time * 0.059 + seed * 75.0) + sin(time * 0.037 + seed * 95.0) - 1.3, 0.0, 1.0)
 
 // slowly drifting base hue
 param hue_base = fract(time * 0.0043)

@@ -11,6 +11,7 @@ pub const PixelInputs = struct {
     y: f32,
     width: f32,
     height: f32,
+    seed: f32,
 };
 
 const RuntimeValue = union(enum) {
@@ -26,6 +27,7 @@ const InputSlot = enum {
     y,
     width,
     height,
+    seed,
 };
 
 const ResolvedSlot = union(enum) {
@@ -143,6 +145,7 @@ pub const Evaluator = struct {
     let_values: []RuntimeValue,
     expr_stack: []RuntimeValue,
     has_dynamic_params: bool,
+    seed: f32,
 
     pub fn init(allocator: std.mem.Allocator, program: dsl_parser.Program) !Evaluator {
         var compile_arena = std.heap.ArenaAllocator.init(allocator);
@@ -180,6 +183,7 @@ pub const Evaluator = struct {
             .let_values = let_values,
             .expr_stack = expr_stack,
             .has_dynamic_params = has_dynamic_params,
+            .seed = generateSeed(),
         };
     }
 
@@ -295,6 +299,7 @@ pub const Evaluator = struct {
             .y = 0.0,
             .width = width_f,
             .height = height_f,
+            .seed = self.seed,
         };
         self.evaluateParams(frame_inputs, .frame_static);
         self.evaluateFrame(frame_inputs);
@@ -314,6 +319,7 @@ pub const Evaluator = struct {
                     .y = py,
                     .width = width_f,
                     .height = height_f,
+                    .seed = self.seed,
                 };
 
                 if (self.has_dynamic_params) {
@@ -412,6 +418,7 @@ pub const Evaluator = struct {
                 .y => .{ .scalar = inputs.y },
                 .width => .{ .scalar = inputs.width },
                 .height => .{ .scalar = inputs.height },
+                .seed => .{ .scalar = inputs.seed },
             },
         };
     }
@@ -728,7 +735,16 @@ fn inputSlotFromName(name: []const u8) ?InputSlot {
     if (std.mem.eql(u8, name, "y")) return .y;
     if (std.mem.eql(u8, name, "width")) return .width;
     if (std.mem.eql(u8, name, "height")) return .height;
+    if (std.mem.eql(u8, name, "seed")) return .seed;
     return null;
+}
+
+/// Generate a random seed in [0, 1) for per-activation randomness.
+fn generateSeed() f32 {
+    var buf: [4]u8 = undefined;
+    std.crypto.random.bytes(&buf);
+    const raw = std.mem.readInt(u32, &buf, .little);
+    return @as(f32, @floatFromInt(raw >> 8)) / 16777216.0; // 2^24
 }
 
 fn compiledExprDependsOnXY(expr: *const CompiledExpr, prior_params: []const CompiledParam) bool {
@@ -1123,6 +1139,7 @@ test "Evaluator evaluates v1 builtin expressions" {
         .y = 2.0,
         .width = 30.0,
         .height = 40.0,
+        .seed = 0.42,
     };
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), try evalScalarExpression("sin(0.0)", inputs), 0.0001);
@@ -1156,6 +1173,20 @@ test "Evaluator evaluates v1 builtin expressions" {
     );
 }
 
+test "Evaluator resolves seed input" {
+    const inputs = PixelInputs{
+        .time = 0.0,
+        .frame = 0.0,
+        .x = 0.0,
+        .y = 0.0,
+        .width = 30.0,
+        .height = 40.0,
+        .seed = 0.42,
+    };
+    try std.testing.expectApproxEqAbs(@as(f32, 0.42), try evalScalarExpression("seed", inputs), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.84), try evalScalarExpression("seed * 2.0", inputs), 0.0001);
+}
+
 test "Evaluator blends layers in order" {
     const source =
         \\effect layered
@@ -1185,6 +1216,7 @@ test "Evaluator blends layers in order" {
         .y = 0.5,
         .width = 30.0,
         .height = 40.0,
+        .seed = 0.42,
     });
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.25), color.r, 0.0001);
@@ -1224,6 +1256,7 @@ test "Evaluator supports frame block, for-range, and if statements" {
         .y = 0.5,
         .width = 30.0,
         .height = 40.0,
+        .seed = 0.42,
     });
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.25), color.r, 0.0001);

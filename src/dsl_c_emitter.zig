@@ -135,7 +135,7 @@ pub fn writeProgramC(allocator: std.mem.Allocator, writer: anytype, program: dsl
         \\}}
         \\
         \\/* Generated from effect: {s} */
-        \\void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, dsl_color_t *out_color) {{
+        \\void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {{
         ,
         .{program.effect_name},
     );
@@ -149,6 +149,7 @@ pub fn writeProgramC(allocator: std.mem.Allocator, writer: anytype, program: dsl
     try root_scope.put("y", .{ .c_name = "y", .value_type = .scalar });
     try root_scope.put("width", .{ .c_name = "width", .value_type = .scalar });
     try root_scope.put("height", .{ .c_name = "height", .value_type = .scalar });
+    try root_scope.put("seed", .{ .c_name = "seed", .value_type = .scalar });
 
     for (program.params) |param| {
         const param_type = try inferExprType(param.value, &root_scope);

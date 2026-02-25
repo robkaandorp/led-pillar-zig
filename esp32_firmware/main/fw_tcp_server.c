@@ -78,6 +78,11 @@ typedef enum {
     FW_TCP_SHADER_SOURCE_NATIVE = 2,
 } fw_tcp_shader_source_t;
 
+/// Generate a random seed in [0, 1) from hardware RNG.
+static inline float fw_tcp_generate_seed(void) {
+    return (float)(esp_random() >> 8) / 16777216.0f;
+}
+
 typedef struct {
     bool started;
     fw_led_layout_config_t layout;
@@ -91,6 +96,7 @@ typedef struct {
     bool has_uploaded_program;
     bool shader_active;
     fw_tcp_shader_source_t shader_source;
+    float native_shader_seed;
     bool default_shader_persisted;
     bool default_shader_faulted;
     uint32_t shader_slow_frame_count;
@@ -335,6 +341,7 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
         (float)frame_counter,
         state->layout.width,
         state->layout.height,
+        state->native_shader_seed,
         state->layout.serpentine_columns ? 1 : 0,
         state->frame_buffer,
         state->frame_buffer_len
@@ -596,6 +603,7 @@ static esp_err_t fw_tcp_load_persisted_default_shader(fw_tcp_server_state_t *sta
         (void)fw_tcp_clear_persisted_default_shader();
         return ESP_ERR_INVALID_RESPONSE;
     }
+    state->runtime.seed = fw_tcp_generate_seed();
 
     state->bytecode_blob_len = read_len;
     state->has_uploaded_program = true;
@@ -668,6 +676,7 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
         xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_VM_ERROR;
     }
+    state->runtime.seed = fw_tcp_generate_seed();
 
     state->shader_active = true;
     state->shader_source = FW_TCP_SHADER_SOURCE_BYTECODE;
@@ -689,6 +698,7 @@ static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state) {
 
     state->shader_active = true;
     state->shader_source = FW_TCP_SHADER_SOURCE_NATIVE;
+    state->native_shader_seed = fw_tcp_generate_seed();
     state->shader_slow_frame_count = 0U;
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;

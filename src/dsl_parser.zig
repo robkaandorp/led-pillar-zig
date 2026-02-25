@@ -158,6 +158,7 @@ const input_names = [_][]const u8{
     "y",
     "width",
     "height",
+    "seed",
 };
 
 const builtin_constant_names = [_][]const u8{

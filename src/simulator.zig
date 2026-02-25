@@ -27,6 +27,7 @@ extern fn dsl_shader_eval_pixel(
     y: f32,
     width: f32,
     height: f32,
+    seed: f32,
     out_color: *EmittedShaderColor,
 ) callconv(.c) void;
 
@@ -47,6 +48,7 @@ const V3State = struct {
     shader_last_slow_frame_ms: u32 = 0,
     shader_frame_count: u32 = 0,
     shader_source: ShaderSource = .none,
+    seed: f32 = 0.0,
 };
 
 const ShaderRenderContext = struct {
@@ -254,10 +256,18 @@ fn handleV3Activate(state: *V3State, source: ShaderSource) u8 {
     if (source == .bytecode and !state.has_uploaded_program) return v3_status_not_ready;
     state.shader_active = true;
     state.shader_source = source;
+    state.seed = generateSimulatorSeed();
     state.shader_slow_frame_count = 0;
     state.shader_last_slow_frame_ms = 0;
     state.shader_frame_count = 0;
     return v3_status_ok;
+}
+
+fn generateSimulatorSeed() f32 {
+    var buf: [4]u8 = undefined;
+    std.crypto.random.bytes(&buf);
+    const raw = std.mem.readInt(u32, &buf, .little);
+    return @as(f32, @floatFromInt(raw >> 8)) / 16777216.0;
 }
 
 fn handleV3SetHook(state: *V3State, payload: []const u8) u8 {
@@ -336,6 +346,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
         const frame_start_ns = timer.read();
 
         var should_render = false;
+        var current_seed: f32 = 0.0;
         {
             context.state.lock.lock();
             defer context.state.lock.unlock();
@@ -343,6 +354,8 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
             if (!should_render) {
                 frame_counter = 0;
                 context.state.shader_frame_count = 0;
+            } else {
+                current_seed = context.state.seed;
             }
         }
 
@@ -356,6 +369,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
                 context.height,
                 time_seconds,
                 frame_counter,
+                current_seed,
                 context.payload,
             );
             stats.recordFrame(tcp_client.header_len + context.payload.len);
@@ -418,7 +432,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
     }
 }
 
-fn renderEmittedShaderFrame(width: u16, height: u16, time_seconds: f32, frame_counter: u32, payload: []u8) void {
+fn renderEmittedShaderFrame(width: u16, height: u16, time_seconds: f32, frame_counter: u32, seed: f32, payload: []u8) void {
     const pixel_count = @as(usize, width) * @as(usize, height);
     const required_len = pixel_count * 3;
     if (payload.len < required_len) return;
@@ -438,6 +452,7 @@ fn renderEmittedShaderFrame(width: u16, height: u16, time_seconds: f32, frame_co
                 @floatFromInt(y),
                 width_f,
                 height_f,
+                seed,
                 &color,
             );
             const offset = @as(usize, physicalPixelIndex(height, x, y)) * 3;

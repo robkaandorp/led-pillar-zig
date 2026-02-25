@@ -144,6 +144,7 @@ typedef struct {
     const fw_bc3_program_t *program;
     float width;
     float height;
+    float seed;
     float time_seconds;
     float frame_counter;
     bool has_dynamic_params;

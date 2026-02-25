@@ -7,7 +7,7 @@
 #include "fw_fast_math.h"
 #include "esp_attr.h"
 
-#define FW_BC3_INPUT_SLOT_COUNT 6U
+#define FW_BC3_INPUT_SLOT_COUNT 7U
 #define FW_BC3_MAX_CALL_ARGS 8U
 #define FW_BC3_BUILTIN_COUNT 20U
 
@@ -70,6 +70,7 @@ typedef enum {
     FW_BC3_INPUT_Y = 3,
     FW_BC3_INPUT_WIDTH = 4,
     FW_BC3_INPUT_HEIGHT = 5,
+    FW_BC3_INPUT_SEED = 6,
 } fw_bc3_input_slot_t;
 
 typedef enum {
@@ -113,6 +114,7 @@ typedef struct {
     float y;
     float width;
     float height;
+    float seed;
 } fw_bc3_inputs_t;
 
 typedef struct {
@@ -1986,6 +1988,7 @@ fw_bc3_status_t fw_bc3_runtime_begin_frame(fw_bc3_runtime_t *runtime, float time
         .y = 0.0f,
         .width = runtime->width,
         .height = runtime->height,
+        .seed = runtime->seed,
     };
 
     fw_bc3_status_t status = fw_bc3_evaluate_params(runtime, &inputs, FW_BC3_PARAM_EVAL_STATIC_ONLY);
@@ -2025,6 +2028,7 @@ fw_bc3_status_t IRAM_ATTR fw_bc3_runtime_eval_pixel(fw_bc3_runtime_t *runtime, f
         .y = y,
         .width = runtime->width,
         .height = runtime->height,
+        .seed = runtime->seed,
     };
 
     if (runtime->has_dynamic_params) {

@@ -33,13 +33,14 @@ void fw_native_shader_eval_pixel(
     float y,
     float width,
     float height,
+    float seed,
     fw_native_shader_color_t *out_color
 ) {
     if (out_color == 0) {
         return;
     }
     dsl_color_t generated_color = {0};
-    dsl_shader_eval_pixel(time_seconds, frame_counter, x, y, width, height, &generated_color);
+    dsl_shader_eval_pixel(time_seconds, frame_counter, x, y, width, height, seed, &generated_color);
     out_color->r = generated_color.r;
     out_color->g = generated_color.g;
     out_color->b = generated_color.b;
@@ -57,6 +58,7 @@ int __attribute__((flatten)) fw_native_shader_render_frame(
     float frame_counter,
     uint16_t width,
     uint16_t height,
+    float seed,
     int serpentine,
     uint8_t *frame_buffer,
     size_t buffer_len
@@ -73,7 +75,7 @@ int __attribute__((flatten)) fw_native_shader_render_frame(
     for (uint16_t y = 0; y < height; y++) {
         for (uint16_t x = 0; x < width; x++) {
             dsl_color_t c = {0};
-            dsl_shader_eval_pixel(time_seconds, frame_counter, (float)x, (float)y, fw, fh, &c);
+            dsl_shader_eval_pixel(time_seconds, frame_counter, (float)x, (float)y, fw, fh, seed, &c);
 
             uint16_t mapped_y = y;
             if (serpentine && ((x & 1U) != 0U)) {

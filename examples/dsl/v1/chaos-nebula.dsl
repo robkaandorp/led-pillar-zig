@@ -6,15 +6,15 @@
 // flowing gas + sparks).  The pillar wrap is exploited via wrapdx.
 effect chaos_nebula_v1
 
-// time bases with mutually irrational ratios
-param t_slow = time * 0.0618
-param t_med  = time * 0.1732
-param t_fast = time * 0.2896
+// time bases with mutually irrational ratios, offset by seed for unique starts
+param t_slow = time * 0.0618 + seed * 100.0
+param t_med  = time * 0.1732 + seed * 200.0
+param t_fast = time * 0.2896 + seed * 300.0
 
 // energy envelope (quiet vs burst)
 // Three incommensurable frequencies produce an aperiodic intensity.
 // energy is near 0 most of the time (quiet), occasionally peaks to 1.
-param energy = clamp(sin(time * 0.11) + sin(time * 0.077) + sin(time * 0.053) - 1.5, 0.0, 1.0)
+param energy = clamp(sin(time * 0.11 + seed * 50.0) + sin(time * 0.077 + seed * 70.0) + sin(time * 0.053 + seed * 90.0) - 1.5, 0.0, 1.0)
 
 // gentle minimum brightness so the display is never completely dark
 param base = 0.025 + 0.015 * sin(time * 0.029)
@@ -57,8 +57,8 @@ layer streams {
 layer sparks {
     let cell_x = floor(x * 0.2)
     let cell_y = floor(y * 0.15)
-    let seed = cell_x * 17.31 + cell_y * 43.17 + floor(time * 1.5) * 7.13
-    let brightness = hash01(seed)
+    let cell_seed = cell_x * 17.31 + cell_y * 43.17 + floor(time * 1.5) * 7.13
+    let brightness = hash01(cell_seed)
     let spark = smoothstep(0.88, 1.0, brightness) * (0.15 + 0.85 * energy)
 
     // hue rotates slowly, every spark gets its own color family

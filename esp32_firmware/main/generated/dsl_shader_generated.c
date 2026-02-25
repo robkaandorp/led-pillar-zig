@@ -92,43 +92,46 @@ static inline dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {
     };
 }
 
-/* Generated from effect: aurora_ribbons_classic_v1 */
-void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, dsl_color_t *out_color) {    const float dsl_let_t_warp_0 = (time * 0.120000f);
-    const float dsl_let_t_hue_1 = (time * 0.200000f);
-    const float dsl_let_t_breathe_2 = (time * 0.350000f);
-    const float dsl_let_t_crest_3 = (time * 0.500000f);
-    const float dsl_let_t_accent_4 = (time * 0.550000f);
+/* Generated from effect: chaos_nebula_v1 */
+void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {    const float dsl_param_t_slow_0 = ((time * 0.061800f) + (seed * 100.000000f));
+    const float dsl_param_t_med_1 = ((time * 0.173200f) + (seed * 200.000000f));
+    const float dsl_param_t_fast_2 = ((time * 0.289600f) + (seed * 300.000000f));
+    const float dsl_param_energy_3 = dsl_clamp((((sinf(((time * 0.110000f) + (seed * 50.000000f))) + sinf(((time * 0.077000f) + (seed * 70.000000f)))) + sinf(((time * 0.053000f) + (seed * 90.000000f)))) - 1.500000f), 0.000000f, 1.000000f);
+    const float dsl_param_base_4 = (0.025000f + (0.015000f * sinf((time * 0.029000f))));
+    const float dsl_param_cx_5 = (width * 0.500000f);
+    const float dsl_param_cy_6 = (height * 0.500000f);
+    const float dsl_param_scx_7 = (6.28318530717958647692f / width);
+    const float dsl_param_scy_8 = (6.28318530717958647692f / height);
     dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
-    /* layer ribbons */
-    const float dsl_let_theta_5 = ((x / width) * 6.28318530717958647692f);
-    for (int32_t dsl_iter_i_6 = 0; dsl_iter_i_6 < 4; dsl_iter_i_6++) {
-        const float dsl_index_i_7 = (float)dsl_iter_i_6;
-        const float dsl_let_layer_index_8 = dsl_index_i_7;
-        const float dsl_let_w0_9 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 0.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_w1_10 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 1.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_w2_11 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 2.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_w3_12 = dsl_clamp((1.000000f - fabsf((dsl_let_layer_index_8 - 3.000000f))), 0.000000f, 1.000000f);
-        const float dsl_let_phase_13 = ((((0.000000f * dsl_let_w0_9) + (1.500000f * dsl_let_w1_10)) + (2.700000f * dsl_let_w2_11)) + (4.000000f * dsl_let_w3_12));
-        const float dsl_let_speed_14 = ((((0.280000f * dsl_let_w0_9) + (0.340000f * dsl_let_w1_10)) + (0.220000f * dsl_let_w2_11)) + (0.300000f * dsl_let_w3_12));
-        const float dsl_let_wave_15 = ((((0.900000f * dsl_let_w0_9) + (1.200000f * dsl_let_w1_10)) + (1.600000f * dsl_let_w2_11)) + (1.050000f * dsl_let_w3_12));
-        const float dsl_let_width_base_16 = ((((4.200000f * dsl_let_w0_9) + (3.800000f * dsl_let_w1_10)) + (3.200000f * dsl_let_w2_11)) + (2.900000f * dsl_let_w3_12));
-        const float dsl_let_alpha_scale_17 = (0.160000f + (dsl_let_layer_index_8 * 0.050000f));
-        const float dsl_let_warp_18 = (sinf((((dsl_let_theta_5 * 3.000000f) + dsl_let_t_warp_0) + (dsl_let_phase_13 * 0.500000f))) * (0.220000f * dsl_let_wave_15));
-        const float dsl_let_flow_19 = sinf((((dsl_let_theta_5 + (time * dsl_let_speed_14)) + dsl_let_phase_13) + dsl_let_warp_18));
-        const float dsl_let_sweep_20 = sinf(((((dsl_let_theta_5 * 2.000000f) - (time * (0.220000f + (dsl_let_speed_14 * 0.150000f)))) + (dsl_let_phase_13 * 0.700000f)) + dsl_let_warp_18));
-        const float dsl_let_base_21 = ((0.500000f + (0.340000f * dsl_let_flow_19)) + (0.080000f * dsl_let_warp_18));
-        const float dsl_let_centerline_22 = (((1.000000f - dsl_let_base_21) * (height - 1.000000f)) + (dsl_let_sweep_20 * 2.900000f));
-        const float dsl_let_breathing_23 = sinf(((dsl_let_t_breathe_2 + dsl_let_phase_13) + (dsl_let_layer_index_8 * 0.400000f)));
-        const float dsl_let_thickness_24 = (dsl_let_width_base_16 + (dsl_let_breathing_23 * 0.900000f));
-        const float dsl_let_band_d_25 = dsl_box((dsl_vec2_t){ .x = 0.000000f, .y = (y - dsl_let_centerline_22) }, (dsl_vec2_t){ .x = width, .y = dsl_let_thickness_24 });
-        const float dsl_let_band_alpha_26 = ((1.000000f - dsl_smoothstep(0.000000f, 1.900000f, dsl_let_band_d_25)) * dsl_let_alpha_scale_17);
-        const float dsl_let_hue_phase_27 = ((dsl_let_t_hue_1 + dsl_let_phase_13) + dsl_let_theta_5);
-        __dsl_out = dsl_blend_over((dsl_color_t){ .r = (0.180000f + (0.220000f * (0.500000f + (0.500000f * sinf((dsl_let_hue_phase_27 + 2.000000f)))))), .g = (0.420000f + (0.460000f * (0.500000f + (0.500000f * sinf(dsl_let_hue_phase_27))))), .b = (0.460000f + (0.420000f * (0.500000f + (0.500000f * sinf((dsl_let_hue_phase_27 + 4.000000f)))))), .a = dsl_let_band_alpha_26 }, __dsl_out);
-        const float dsl_let_accent_center_28 = (dsl_let_centerline_22 + (sinf((((dsl_let_theta_5 * 4.000000f) + dsl_let_t_accent_4) + dsl_let_phase_13)) * 1.300000f));
-        const float dsl_let_accent_d_29 = dsl_box((dsl_vec2_t){ .x = 0.000000f, .y = (y - dsl_let_accent_center_28) }, (dsl_vec2_t){ .x = width, .y = fmaxf(0.400000f, (dsl_let_thickness_24 * 0.260000f)) });
-        const float dsl_let_crest_30 = dsl_smoothstep(0.550000f, 1.000000f, sinf((((dsl_let_theta_5 * 2.000000f) + dsl_let_t_crest_3) + dsl_let_phase_13)));
-        const float dsl_let_accent_alpha_31 = (((1.000000f - dsl_smoothstep(0.000000f, 0.950000f, dsl_let_accent_d_29)) * dsl_let_crest_30) * 0.200000f);
-        __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.880000f, .g = 0.900000f, .b = 0.950000f, .a = dsl_let_accent_alpha_31 }, __dsl_out);
-    }
+    /* layer nebula */
+    const float dsl_let_dx_9 = dsl_wrapdx(x, (dsl_param_cx_5 + ((sinf((dsl_param_t_slow_0 * 3.700000f)) * width) * 0.250000f)), width);
+    const float dsl_let_dy_10 = ((y - dsl_param_cy_6) + ((cosf((dsl_param_t_slow_0 * 2.300000f)) * height) * 0.150000f));
+    const float dsl_let_field1_11 = (sinf((((dsl_let_dx_9 * dsl_param_scx_7) * 2.000000f) + (dsl_param_t_slow_0 * 4.000000f))) * cosf((((dsl_let_dy_10 * dsl_param_scy_8) * 1.500000f) + (dsl_param_t_slow_0 * 3.000000f))));
+    const float dsl_let_field2_12 = (cosf((((dsl_let_dx_9 * dsl_param_scx_7) * 1.300000f) - (dsl_param_t_med_1 * 2.500000f))) * sinf((((dsl_let_dy_10 * dsl_param_scy_8) * 2.200000f) + (dsl_param_t_med_1 * 1.800000f))));
+    const float dsl_let_glow_13 = (dsl_smoothstep((-(0.200000f)), 0.600000f, (dsl_let_field1_11 + (dsl_let_field2_12 * 0.500000f))) * ((dsl_param_base_4 + 0.150000f) + (0.350000f * dsl_param_energy_3)));
+    const float dsl_let_r_14 = (dsl_let_glow_13 * (0.550000f + (0.450000f * sinf((dsl_param_t_slow_0 * 1.900000f)))));
+    const float dsl_let_g_15 = (dsl_let_glow_13 * (0.250000f + (0.350000f * sinf(((dsl_param_t_slow_0 * 2.700000f) + 2.000000f)))));
+    const float dsl_let_b_16 = (dsl_let_glow_13 * (0.450000f + (0.450000f * cosf(((dsl_param_t_slow_0 * 1.400000f) + 1.000000f)))));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_14, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_15, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_16, 0.000000f, 1.000000f), .a = 1.000000f }, __dsl_out);
+    /* layer streams */
+    const float dsl_let_drift_17 = ((dsl_param_t_med_1 * 5.000000f) + ((y * dsl_param_scy_8) * 3.000000f));
+    const float dsl_let_wx_18 = dsl_wrapdx(x, (width * (0.300000f + (0.200000f * sinf((dsl_param_t_fast_2 * 1.600000f))))), width);
+    const float dsl_let_stream_19 = (sinf((((dsl_let_wx_18 * dsl_param_scx_7) * 3.500000f) + dsl_let_drift_17)) * cosf((((dsl_let_wx_18 * dsl_param_scx_7) * 1.800000f) - (dsl_param_t_fast_2 * 3.000000f))));
+    const float dsl_let_mask_20 = (dsl_smoothstep(0.250000f, 0.850000f, dsl_let_stream_19) * (0.080000f + (0.700000f * dsl_param_energy_3)));
+    const float dsl_let_r_21 = (dsl_let_mask_20 * (0.200000f + (0.500000f * sinf(((dsl_param_t_fast_2 * 2.300000f) + 1.000000f)))));
+    const float dsl_let_g_22 = (dsl_let_mask_20 * (0.500000f + (0.400000f * cosf((dsl_param_t_med_1 * 3.100000f)))));
+    const float dsl_let_b_23 = (dsl_let_mask_20 * (0.700000f + (0.300000f * sinf(((dsl_param_t_slow_0 * 5.000000f) + 3.000000f)))));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_21, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_22, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_23, 0.000000f, 1.000000f), .a = dsl_let_mask_20 }, __dsl_out);
+    /* layer sparks */
+    const float dsl_let_cell_x_24 = floorf((x * 0.200000f));
+    const float dsl_let_cell_y_25 = floorf((y * 0.150000f));
+    const float dsl_let_cell_seed_26 = (((dsl_let_cell_x_24 * 17.310000f) + (dsl_let_cell_y_25 * 43.170000f)) + (floorf((time * 1.500000f)) * 7.130000f));
+    const float dsl_let_brightness_27 = dsl_hash01(dsl_let_cell_seed_26);
+    const float dsl_let_spark_28 = (dsl_smoothstep(0.880000f, 1.000000f, dsl_let_brightness_27) * (0.150000f + (0.850000f * dsl_param_energy_3)));
+    const float dsl_let_hue_29 = dsl_fract((dsl_hash01(((dsl_let_cell_x_24 * 13.000000f) + (dsl_let_cell_y_25 * 29.000000f))) + (time * 0.030000f)));
+    const float dsl_let_r_30 = (dsl_let_spark_28 * (0.500000f + (0.500000f * sinf((dsl_let_hue_29 * 6.28318530717958647692f)))));
+    const float dsl_let_g_31 = (dsl_let_spark_28 * (0.500000f + (0.500000f * sinf(((dsl_let_hue_29 * 6.28318530717958647692f) + (6.28318530717958647692f / 3.000000f))))));
+    const float dsl_let_b_32 = (dsl_let_spark_28 * (0.500000f + (0.500000f * sinf(((dsl_let_hue_29 * 6.28318530717958647692f) + ((6.28318530717958647692f * 2.000000f) / 3.000000f))))));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_30, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_31, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_32, 0.000000f, 1.000000f), .a = dsl_let_spark_28 }, __dsl_out);
     *out_color = __dsl_out;
 }

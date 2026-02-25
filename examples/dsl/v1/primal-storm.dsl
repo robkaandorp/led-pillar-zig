@@ -6,13 +6,13 @@
 // frequencies guarantee the pattern never repeats.
 effect primal_storm_v1
 
-// time bases
-param t1 = time * 0.0732
-param t2 = time * 0.1414
-param t3 = time * 0.2236
+// time bases, offset by seed for unique starts
+param t1 = time * 0.0732 + seed * 100.0
+param t2 = time * 0.1414 + seed * 200.0
+param t3 = time * 0.2236 + seed * 300.0
 
 // storm intensity envelope
-param storm = clamp(sin(time * 0.097) + sin(time * 0.067) + sin(time * 0.041) - 1.4, 0.0, 1.0)
+param storm = clamp(sin(time * 0.097 + seed * 60.0) + sin(time * 0.067 + seed * 80.0) + sin(time * 0.041 + seed * 40.0) - 1.4, 0.0, 1.0)
 
 // movement speed scales with storm
 param speed = 0.5 + 2.0 * storm

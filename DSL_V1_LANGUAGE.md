@@ -63,7 +63,7 @@ call           = IDENT "(" [expr ("," expr)*] ")" ;
 How params are used in v1:
 - Params are shared scalar values that can be referenced from `frame` and `layer` blocks.
 - Params are useful for tuning values (`speed`, `radius`, `intensity`) in one place.
-- Param expressions can use builtin functions, builtin constants, and input identifiers (`time`, `frame`, `width`, `height`, and also `x`/`y`).
+- Param expressions can use builtin functions, builtin constants, and input identifiers (`time`, `frame`, `width`, `height`, `seed`, and also `x`/`y`).
 - A param can reference earlier params, but not later params.
 - At runtime, params are evaluated before layer blending; params that depend on `x`/`y` are evaluated per pixel, others are evaluated once per frame.
 
@@ -125,6 +125,7 @@ Available input identifiers:
 - `frame`: current frame number as scalar
 - `x`, `y`: current pixel coordinates
 - `width`, `height`: display dimensions
+- `seed`: per-activation random value in [0, 1), constant for the lifetime of the shader
 
 ## Quick examples
 
@@ -196,7 +197,7 @@ The parser/validator rejects:
   - keywords (`effect`, `param`, `frame`, `layer`, `let`, `if`, `else`, `for`, `in`, `blend`, `emit`)
   - builtin names
   - builtin constant names (`PI`, `TAU`)
-  - input names (`time`, `frame`, `x`, `y`, `width`, `height`)
+  - input names (`time`, `frame`, `x`, `y`, `width`, `height`, `seed`)
 - Unknown identifiers
 - Unknown builtin names
 - Invalid builtin arity or argument types

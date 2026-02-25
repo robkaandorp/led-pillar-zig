@@ -17,6 +17,7 @@ void fw_native_shader_eval_pixel(
     float y,
     float width,
     float height,
+    float seed,
     fw_native_shader_color_t *out_color
 );
 
@@ -29,6 +30,7 @@ void fw_native_shader_eval_pixel(
  * @param frame_counter  Monotonically increasing frame index.
  * @param width          Grid width (columns).
  * @param height         Grid height (rows).
+ * @param seed           Per-activation random seed in [0, 1).
  * @param serpentine     Non-zero if odd columns are bottom-to-top.
  * @param frame_buffer   Output buffer (width*height*3 bytes, RGB).
  * @param buffer_len     Size of frame_buffer in bytes.
@@ -39,6 +41,7 @@ int fw_native_shader_render_frame(
     float frame_counter,
     uint16_t width,
     uint16_t height,
+    float seed,
     int serpentine,
     uint8_t *frame_buffer,
     size_t buffer_len
