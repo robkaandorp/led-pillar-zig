@@ -391,6 +391,7 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
     }
     state->uniform_last_color_valid = false;
 
+    const int64_t vm_render_start = esp_timer_get_time();
     uint32_t logical_index = 0U;
     for (uint16_t y = 0; y < state->layout.height; y += 1U) {
         for (uint16_t x = 0; x < state->layout.width; x += 1U) {
@@ -422,6 +423,16 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
             state->frame_buffer[offset + 2U] = fw_tcp_channel_to_u8(color.b);
             logical_index += 1U;
         }
+    }
+
+    const int64_t vm_render_end = esp_timer_get_time();
+    const int64_t vm_compute_us = vm_render_end - vm_render_start;
+    static uint32_t vm_log_counter = 0;
+    vm_log_counter++;
+    if ((vm_log_counter % 20U) == 1U) {
+        ESP_LOGI(TAG, "VM frame %lu: compute=%lld us (%lld us/pixel)",
+                 (unsigned long)vm_log_counter, (long long)vm_compute_us,
+                 (long long)(vm_compute_us / 1200));
     }
 
     return fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);

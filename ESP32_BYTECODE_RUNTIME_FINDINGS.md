@@ -170,6 +170,98 @@ Recommended rollout:
 - A LUT-based `sin/cos` path regressed significantly on-device and was reverted.
 - One mapping-cache attempt caused startup `ESP_ERR_NO_MEM` and was reverted.
 
-### Current conclusion
+### Current conclusion (phase 1)
 - The dominant cost for heavy shaders is still in per-pixel VM work (especially builtin-heavy expressions), not just transport or rendering I/O.
 - The dominant remaining win is reducing builtin-heavy work per pixel (compiler-side simplification/CSE/constant folding and cheaper builtin execution), because builtin boundaries still require float math.
+
+---
+
+## Bytecode VM deep optimization (phase 2)
+
+### Context
+Phase 1 optimizations (above) brought performance to a reasonable level but the VM remained slow for complex shaders like `aurora-ribbons-classic` (4 layers with for loops, ~1000 expression ops per pixel). This phase investigated fundamental interpreter architecture changes.
+
+**Benchmark shader:** `aurora-ribbons-classic.dsl` — 1200 pixels (30×40), 4-iteration for loop per pixel.
+
+### Performance progression
+
+| # | Optimization | µs/frame | µs/pixel | FPS | vs baseline |
+|---|---|---|---|---|---|
+| 0 | Baseline (Q16.16 + fast math builtins) | 933,335 | 777 | 1.1 | 1.0× |
+| 1 | Q16.16 → native float | 839,581 | 699 | 1.2 | 1.1× |
+| 2 | Pre-decoded instruction dispatch | 429,089 | 357 | 2.3 | 2.2× |
+| 3 | Inline 14 common builtins | 421,715 | 351 | 2.4 | 2.2× |
+| 4 | Computed goto + 8-byte ops + HALT + IRAM | 260,000 | 217 | 3.8 | 3.6× |
+| 5 | IRAM all hot-path + flatten | 257,000 | 214 | 3.9 | 3.6× |
+| — | **Native C shader (reference)** | **14,700** | **12** | **66** | **— (18× faster)** |
+
+### Optimization details
+
+#### 1. Q16.16 → native float (10% improvement)
+- Removed all Q16.16 fixed-point infrastructure (6 helper functions, 5 defines)
+- Changed `fw_bc3_value_t.as.scalar` from `int32_t` to `float`
+- All arithmetic operations now use hardware FPU directly
+- **Why only 10%:** The bottleneck was not arithmetic but interpreter dispatch overhead — per-instruction cursor reads with bounds checks, if-else chain opcode dispatch, and tag checking on every operation
+
+#### 2. Pre-decoded instruction dispatch (2.2× total speedup)
+- Added `fw_bc3_decoded_op_t` struct and `fw_bc3_decoded_opcode_t` enum (13 opcodes)
+- Pre-decode pass at parse time converts byte stream to flat decoded-op array
+- Runtime evaluator uses tight switch on contiguous enum values → GCC generates jump table
+- Split generic opcodes into specialized variants (e.g., `PUSH_LITERAL` → `PUSH_SCALAR_LIT`/`PUSH_VEC2_LIT`/`PUSH_RGBA_LIT`; `PUSH_SLOT` → `PUSH_INPUT`/`PUSH_PARAM`/`PUSH_FRAME_LET`/`PUSH_LET`)
+- Eliminated ALL runtime bounds checks and type-tag checks from the hot path
+- **This was the single largest improvement** — demonstrates that dispatch overhead, not computation, dominated VM cost
+
+#### 3. Inline builtins as separate decoded opcodes (marginal improvement)
+- Added 14 new enum values (SIN, COS, SQRT, ABS, FLOOR, FRACT, LN, LOG, MIN, MAX, CLAMP, SMOOTHSTEP, VEC2, RGBA)
+- Each builtin operates directly on the stack without generic call/dispatch overhead
+- **Why marginal:** Function call overhead for builtins was small relative to total dispatch cost already eliminated by optimization #2
+
+#### 4. Computed goto + compact ops + IRAM (3.6× total speedup)
+This was a multi-part optimization:
+
+**Compact decoded ops (20 → 8 bytes):**
+- Removed `vec2` and `rgba` members from `fw_bc3_decoded_op_t` union
+- Vec2/RGBA literals decomposed at decode time into multiple scalar pushes + constructor call
+- Result: 2048 ops × 8 bytes = 16 KB (vs 1024 × 20 = 20 KB before) — less memory AND more capacity
+- Better cache utilization: ~1000 ops × 8 bytes fits well in 32 KB d-cache
+
+**Computed goto dispatch (replacing switch):**
+- Each instruction handler ends with `goto *dispatch_table[op->op]` — eliminates central switch indirect jump
+- Each dispatch site has its own branch prediction entry (vs shared prediction for switch)
+- Added HALT sentinel at end of each expression to eliminate loop counter check entirely
+
+**IRAM_ATTR on eval_expression:**
+- Places hot interpreter function in zero-wait-state IRAM (single-cycle access vs potential i-cache misses from flash)
+- Used ~2 KB of IRAM (25 KB remaining after phase 2 full IRAM expansion)
+
+#### 5. IRAM all hot-path + flatten (~1% improvement)
+- Added `IRAM_ATTR` to: `execute_statement_block`, `evaluate_params`, `runtime_eval_pixel`, `clamp01`, `linearstep`, `smoothstep`, `blend_over`
+- Added `__attribute__((flatten))` to `eval_expression` to force-inline all math callees
+- **Why minimal:** The eval_expression inner loop was already the dominant cost; outer call overhead was negligible
+
+### Analysis of remaining overhead
+
+At 214 µs/pixel with 240 MHz clock = **51,360 cycles per pixel**. With ~1000 decoded ops per pixel:
+- **~51 cycles per decoded op** (actual measured)
+- Theoretical minimum for computed-goto interpreter: ~15–20 cycles per op
+- Native compiler output: ~2.9 cycles per op (12 µs × 240 MHz / ~1000 ops)
+
+The **18× gap** between VM and native shader is a fundamental consequence of interpretation:
+- Each VM instruction requires: fetch op struct from memory, dispatch via indirect jump, execute, advance pointer, dispatch next
+- Native code executes arithmetic inline with no dispatch overhead, enables register allocation across expressions, and allows compiler to reorder/pipeline instructions
+
+### Memory impact
+- Free heap before buffer alloc: 178,808 bytes (improved from 174,712 due to smaller decoded ops)
+- IRAM remaining: 25 KiB (from original 31 KiB; used ~6 KB for IRAM_ATTR functions)
+- Decoded ops storage: 16 KB (2048 × 8 bytes) — allocated within bytecode program struct
+
+### Conclusion
+
+The bytecode VM has been optimized **3.6× from baseline** through architectural changes (pre-decode, computed goto, compact ops, IRAM placement). Further micro-optimizations yield diminishing returns (<1%).
+
+The **18× performance gap vs native C shader** is inherent to interpretation and cannot be closed without fundamentally different approaches (JIT compilation, which is impractical on ESP32 due to Harvard architecture). For complex shaders like `aurora-ribbons-classic`, the bytecode VM achieves ~3.9 FPS vs the native shader's 66 FPS.
+
+**Recommendation:**
+- Use the **native C shader path** for production deployments requiring high frame rates
+- Use the **bytecode VM** for rapid development/iteration (upload new shader without reflashing)
+- The DSL compiler's C code emission path bridges both: develop in DSL → emit C → compile into firmware for native-speed execution

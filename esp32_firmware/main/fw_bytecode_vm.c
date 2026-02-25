@@ -5,6 +5,7 @@
 #include <math.h>
 #include <string.h>
 #include "fw_fast_math.h"
+#include "esp_attr.h"
 
 #define FW_BC3_INPUT_SLOT_COUNT 6U
 #define FW_BC3_MAX_CALL_ARGS 8U
@@ -27,6 +28,40 @@ typedef enum {
     FW_BC3_SLOT_FRAME_LET = 3,
     FW_BC3_SLOT_LET = 4,
 } fw_bc3_slot_tag_t;
+
+typedef enum {
+    FW_BC3_DOP_PUSH_SCALAR_LIT = 0,
+    FW_BC3_DOP_PUSH_INPUT = 1,
+    FW_BC3_DOP_PUSH_PARAM = 2,
+    FW_BC3_DOP_PUSH_FRAME_LET = 3,
+    FW_BC3_DOP_PUSH_LET = 4,
+    FW_BC3_DOP_NEGATE = 5,
+    FW_BC3_DOP_ADD = 6,
+    FW_BC3_DOP_SUB = 7,
+    FW_BC3_DOP_MUL = 8,
+    FW_BC3_DOP_DIV = 9,
+    FW_BC3_DOP_CALL_BUILTIN = 10,
+    // Inlined builtins (1-arg scalar -> scalar)
+    FW_BC3_DOP_BUILTIN_SIN = 11,
+    FW_BC3_DOP_BUILTIN_COS = 12,
+    FW_BC3_DOP_BUILTIN_SQRT = 13,
+    FW_BC3_DOP_BUILTIN_ABS = 14,
+    FW_BC3_DOP_BUILTIN_FLOOR = 15,
+    FW_BC3_DOP_BUILTIN_FRACT = 16,
+    FW_BC3_DOP_BUILTIN_LN = 17,
+    FW_BC3_DOP_BUILTIN_LOG = 18,
+    // Inlined builtins (2-arg scalar -> scalar)
+    FW_BC3_DOP_BUILTIN_MIN = 19,
+    FW_BC3_DOP_BUILTIN_MAX = 20,
+    // Inlined builtins (3-arg scalar -> scalar)
+    FW_BC3_DOP_BUILTIN_CLAMP = 21,
+    FW_BC3_DOP_BUILTIN_SMOOTHSTEP = 22,
+    // Inlined type constructors
+    FW_BC3_DOP_BUILTIN_VEC2 = 23,
+    FW_BC3_DOP_BUILTIN_RGBA = 24,
+    // Sentinel: terminates computed-goto dispatch
+    FW_BC3_DOP_HALT = 25,
+} fw_bc3_decoded_opcode_t;
 
 typedef enum {
     FW_BC3_INPUT_TIME = 0,
@@ -363,6 +398,237 @@ static fw_bc3_status_t fw_bc3_parse_expression(fw_bc3_program_t *program, fw_bc3
         return FW_BC3_ERR_FORMAT;
     }
 
+    // Pre-decode pass: convert raw bytecode into flat decoded ops
+    {
+        const uint16_t decode_start = program->decoded_op_count;
+        program->expr_op_start[expr_index] = decode_start;
+
+        fw_bc3_cursor_t decode_cursor = {
+            .base = cursor->base,
+            .cur = cursor->base + program->expressions[expr_index].byte_offset,
+            .end = cursor->end,
+        };
+
+        uint32_t di = 0;
+        while (di < instruction_count) {
+            if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+                return FW_BC3_ERR_LIMIT;
+            }
+            fw_bc3_decoded_op_t *dop = &program->decoded_ops[program->decoded_op_count];
+            memset(dop, 0, sizeof(*dop));
+
+            uint8_t opcode = 0;
+            status = fw_bc3_cursor_read_u8(&decode_cursor, &opcode);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+
+            if (opcode == FW_BC3_OP_PUSH_LITERAL) {
+                uint8_t tag = 0;
+                status = fw_bc3_cursor_read_u8(&decode_cursor, &tag);
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                if (tag == FW_BC3_VALUE_SCALAR) {
+                    float scalar = 0.0f;
+                    status = fw_bc3_cursor_read_f32(&decode_cursor, &scalar);
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_SCALAR_LIT;
+                    dop->scalar = scalar;
+                } else if (tag == FW_BC3_VALUE_VEC2) {
+                    float x_val = 0.0f, y_val = 0.0f;
+                    status = fw_bc3_cursor_read_f32(&decode_cursor, &x_val);
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                    status = fw_bc3_cursor_read_f32(&decode_cursor, &y_val);
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                    // Decompose: push x, push y, vec2 constructor
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_SCALAR_LIT;
+                    dop->scalar = x_val;
+                    program->decoded_op_count += 1U;
+                    if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+                        return FW_BC3_ERR_LIMIT;
+                    }
+                    dop = &program->decoded_ops[program->decoded_op_count];
+                    memset(dop, 0, sizeof(*dop));
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_SCALAR_LIT;
+                    dop->scalar = y_val;
+                    program->decoded_op_count += 1U;
+                    if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+                        return FW_BC3_ERR_LIMIT;
+                    }
+                    dop = &program->decoded_ops[program->decoded_op_count];
+                    memset(dop, 0, sizeof(*dop));
+                    dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_VEC2;
+                } else if (tag == FW_BC3_VALUE_RGBA) {
+                    float r = 0.0f, g = 0.0f, b_val = 0.0f, a = 0.0f;
+                    status = fw_bc3_cursor_read_f32(&decode_cursor, &r);
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                    status = fw_bc3_cursor_read_f32(&decode_cursor, &g);
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                    status = fw_bc3_cursor_read_f32(&decode_cursor, &b_val);
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                    status = fw_bc3_cursor_read_f32(&decode_cursor, &a);
+                    if (status != FW_BC3_OK) {
+                        return status;
+                    }
+                    // Decompose: push r, push g, push b, push a, rgba constructor
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_SCALAR_LIT;
+                    dop->scalar = r;
+                    program->decoded_op_count += 1U;
+                    if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+                        return FW_BC3_ERR_LIMIT;
+                    }
+                    dop = &program->decoded_ops[program->decoded_op_count];
+                    memset(dop, 0, sizeof(*dop));
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_SCALAR_LIT;
+                    dop->scalar = g;
+                    program->decoded_op_count += 1U;
+                    if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+                        return FW_BC3_ERR_LIMIT;
+                    }
+                    dop = &program->decoded_ops[program->decoded_op_count];
+                    memset(dop, 0, sizeof(*dop));
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_SCALAR_LIT;
+                    dop->scalar = b_val;
+                    program->decoded_op_count += 1U;
+                    if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+                        return FW_BC3_ERR_LIMIT;
+                    }
+                    dop = &program->decoded_ops[program->decoded_op_count];
+                    memset(dop, 0, sizeof(*dop));
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_SCALAR_LIT;
+                    dop->scalar = a;
+                    program->decoded_op_count += 1U;
+                    if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+                        return FW_BC3_ERR_LIMIT;
+                    }
+                    dop = &program->decoded_ops[program->decoded_op_count];
+                    memset(dop, 0, sizeof(*dop));
+                    dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_RGBA;
+                } else {
+                    return FW_BC3_ERR_INVALID_TAG;
+                }
+            } else if (opcode == FW_BC3_OP_PUSH_SLOT) {
+                fw_bc3_slot_ref_t slot = {0};
+                status = fw_bc3_parse_slot_ref(&decode_cursor, &slot);
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                if (slot.tag == FW_BC3_SLOT_INPUT) {
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_INPUT;
+                    dop->index = (uint16_t)slot.index;
+                } else if (slot.tag == FW_BC3_SLOT_PARAM) {
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_PARAM;
+                    dop->index = (uint16_t)slot.index;
+                } else if (slot.tag == FW_BC3_SLOT_FRAME_LET) {
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_FRAME_LET;
+                    dop->index = (uint16_t)slot.index;
+                } else if (slot.tag == FW_BC3_SLOT_LET) {
+                    dop->op = (uint8_t)FW_BC3_DOP_PUSH_LET;
+                    dop->index = (uint16_t)slot.index;
+                } else {
+                    return FW_BC3_ERR_INVALID_TAG;
+                }
+            } else if (opcode == FW_BC3_OP_NEGATE) {
+                dop->op = (uint8_t)FW_BC3_DOP_NEGATE;
+            } else if (opcode == FW_BC3_OP_ADD) {
+                dop->op = (uint8_t)FW_BC3_DOP_ADD;
+            } else if (opcode == FW_BC3_OP_SUB) {
+                dop->op = (uint8_t)FW_BC3_DOP_SUB;
+            } else if (opcode == FW_BC3_OP_MUL) {
+                dop->op = (uint8_t)FW_BC3_DOP_MUL;
+            } else if (opcode == FW_BC3_OP_DIV) {
+                dop->op = (uint8_t)FW_BC3_DOP_DIV;
+            } else if (opcode == FW_BC3_OP_CALL_BUILTIN) {
+                uint8_t builtin = 0;
+                uint8_t arg_count = 0;
+                status = fw_bc3_cursor_read_u8(&decode_cursor, &builtin);
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                status = fw_bc3_cursor_read_u8(&decode_cursor, &arg_count);
+                if (status != FW_BC3_OK) {
+                    return status;
+                }
+                switch ((fw_bc3_builtin_id_t)builtin) {
+                    case FW_BC3_BUILTIN_SIN:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_SIN;
+                        break;
+                    case FW_BC3_BUILTIN_COS:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_COS;
+                        break;
+                    case FW_BC3_BUILTIN_SQRT:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_SQRT;
+                        break;
+                    case FW_BC3_BUILTIN_ABS:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_ABS;
+                        break;
+                    case FW_BC3_BUILTIN_FLOOR:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_FLOOR;
+                        break;
+                    case FW_BC3_BUILTIN_FRACT:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_FRACT;
+                        break;
+                    case FW_BC3_BUILTIN_LN:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_LN;
+                        break;
+                    case FW_BC3_BUILTIN_LOG:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_LOG;
+                        break;
+                    case FW_BC3_BUILTIN_MIN:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_MIN;
+                        break;
+                    case FW_BC3_BUILTIN_MAX:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_MAX;
+                        break;
+                    case FW_BC3_BUILTIN_CLAMP:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_CLAMP;
+                        break;
+                    case FW_BC3_BUILTIN_SMOOTHSTEP:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_SMOOTHSTEP;
+                        break;
+                    case FW_BC3_BUILTIN_VEC2:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_VEC2;
+                        break;
+                    case FW_BC3_BUILTIN_RGBA:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_RGBA;
+                        break;
+                    default:
+                        dop->op = (uint8_t)FW_BC3_DOP_CALL_BUILTIN;
+                        dop->builtin = builtin;
+                        dop->arg_count = arg_count;
+                        break;
+                }
+            } else {
+                return FW_BC3_ERR_INVALID_OPCODE;
+            }
+
+            program->decoded_op_count += 1U;
+            di += 1U;
+        }
+
+        program->expr_op_count[expr_index] = (uint16_t)(program->decoded_op_count - decode_start);
+
+        // Append HALT sentinel for computed-goto dispatch
+        if (program->decoded_op_count >= FW_BC3_MAX_DECODED_OPS) {
+            return FW_BC3_ERR_LIMIT;
+        }
+        program->decoded_ops[program->decoded_op_count].op = (uint8_t)FW_BC3_DOP_HALT;
+        program->decoded_op_count += 1U;
+    }
+
     *out_expr_index = expr_index;
     return FW_BC3_OK;
 }
@@ -378,76 +644,31 @@ static fw_bc3_status_t fw_bc3_expression_scan_input_dependencies(
         return FW_BC3_ERR_INVALID_ARG;
     }
 
-    const fw_bc3_expr_view_t *expr = &program->expressions[expr_index];
-    if ((size_t)expr->byte_offset >= program->blob_len) {
-        return FW_BC3_ERR_TRUNCATED;
-    }
-
-    fw_bc3_cursor_t cursor = {
-        .base = program->blob,
-        .cur = program->blob + expr->byte_offset,
-        .end = program->blob + program->blob_len,
-    };
+    const fw_bc3_decoded_op_t *ops = &program->decoded_ops[program->expr_op_start[expr_index]];
+    const uint16_t op_count = program->expr_op_count[expr_index];
 
     bool local_uses_x = false;
     bool local_uses_y = false;
-    uint16_t i = 0U;
-    while (i < expr->instruction_count) {
-        uint8_t opcode = 0U;
-        fw_bc3_status_t status = fw_bc3_cursor_read_u8(&cursor, &opcode);
-        if (status != FW_BC3_OK) {
-            return status;
-        }
-
-        if (opcode == FW_BC3_OP_PUSH_LITERAL) {
-            status = fw_bc3_parse_runtime_value(&cursor, NULL);
-            if (status != FW_BC3_OK) {
-                return status;
+    for (uint16_t i = 0; i < op_count; i++) {
+        const fw_bc3_decoded_op_t *op = &ops[i];
+        if (op->op == (uint8_t)FW_BC3_DOP_PUSH_INPUT) {
+            if (op->index == FW_BC3_INPUT_X) {
+                local_uses_x = true;
+            } else if (op->index == FW_BC3_INPUT_Y) {
+                local_uses_y = true;
             }
-        } else if (opcode == FW_BC3_OP_PUSH_SLOT) {
-            fw_bc3_slot_ref_t slot = {0};
-            status = fw_bc3_parse_slot_ref(&cursor, &slot);
-            if (status != FW_BC3_OK) {
-                return status;
+        } else if (include_param_dependencies && op->op == (uint8_t)FW_BC3_DOP_PUSH_PARAM && op->index < program->param_count) {
+            if (program->param_depends_x[op->index] != 0U) {
+                local_uses_x = true;
             }
-            if (slot.tag == FW_BC3_SLOT_INPUT) {
-                if (slot.index == FW_BC3_INPUT_X) {
-                    local_uses_x = true;
-                } else if (slot.index == FW_BC3_INPUT_Y) {
-                    local_uses_y = true;
-                }
-            } else if (include_param_dependencies && slot.tag == FW_BC3_SLOT_PARAM && slot.index < program->param_count) {
-                if (program->param_depends_x[slot.index] != 0U) {
-                    local_uses_x = true;
-                }
-                if (program->param_depends_y[slot.index] != 0U) {
-                    local_uses_y = true;
-                }
+            if (program->param_depends_y[op->index] != 0U) {
+                local_uses_y = true;
             }
-        } else if (opcode == FW_BC3_OP_CALL_BUILTIN) {
-            uint8_t builtin = 0U;
-            uint8_t arg_count = 0U;
-            status = fw_bc3_cursor_read_u8(&cursor, &builtin);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-            status = fw_bc3_cursor_read_u8(&cursor, &arg_count);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-        } else if (
-            opcode == FW_BC3_OP_NEGATE || opcode == FW_BC3_OP_ADD || opcode == FW_BC3_OP_SUB || opcode == FW_BC3_OP_MUL ||
-            opcode == FW_BC3_OP_DIV
-        ) {
-            // No payload.
-        } else {
-            return FW_BC3_ERR_INVALID_OPCODE;
         }
 
         if (local_uses_x && local_uses_y) {
             break;
         }
-        i += 1U;
     }
 
     *uses_x = local_uses_x;
@@ -848,7 +1069,7 @@ fw_bc3_status_t fw_bc3_program_load(fw_bc3_program_t *program, const uint8_t *bl
     return FW_BC3_OK;
 }
 
-static float fw_bc3_clamp01(float value) {
+static float IRAM_ATTR fw_bc3_clamp01(float value) {
     if (value < 0.0f) {
         return 0.0f;
     }
@@ -858,14 +1079,14 @@ static float fw_bc3_clamp01(float value) {
     return value;
 }
 
-static float fw_bc3_linearstep(float edge0, float edge1, float x) {
+static float IRAM_ATTR fw_bc3_linearstep(float edge0, float edge1, float x) {
     if (edge0 == edge1) {
         return (x < edge0) ? 0.0f : 1.0f;
     }
     return fw_bc3_clamp01((x - edge0) / (edge1 - edge0));
 }
 
-static float fw_bc3_smoothstep(float edge0, float edge1, float x) {
+static float IRAM_ATTR fw_bc3_smoothstep(float edge0, float edge1, float x) {
     const float t = fw_bc3_linearstep(edge0, edge1, x);
     return t * t * (3.0f - (2.0f * t));
 }
@@ -951,7 +1172,7 @@ static fw_bc3_color_t fw_bc3_color_clamped(fw_bc3_color_t color) {
     return out;
 }
 
-static fw_bc3_color_t fw_bc3_blend_over(fw_bc3_color_t src, fw_bc3_color_t dst) {
+static fw_bc3_color_t IRAM_ATTR fw_bc3_blend_over(fw_bc3_color_t src, fw_bc3_color_t dst) {
     const fw_bc3_color_t s = fw_bc3_color_clamped(src);
     const fw_bc3_color_t d = fw_bc3_color_clamped(dst);
     const float out_a = s.a + (d.a * (1.0f - s.a));
@@ -1308,68 +1529,8 @@ static void fw_bc3_reset_value_slots(fw_bc3_value_t *values, uint16_t count) {
     }
 }
 
-static fw_bc3_status_t fw_bc3_load_slot(
-    fw_bc3_runtime_t *runtime,
-    const fw_bc3_inputs_t *inputs,
-    const fw_bc3_slot_ref_t *slot,
-    uint16_t let_limit,
-    fw_bc3_value_t *out
-) {
-    if (slot->tag == FW_BC3_SLOT_INPUT) {
-        out->tag = FW_BC3_VALUE_SCALAR;
-        switch ((fw_bc3_input_slot_t)slot->index) {
-            case FW_BC3_INPUT_TIME:
-                out->as.scalar = inputs->time;
-                return FW_BC3_OK;
-            case FW_BC3_INPUT_FRAME:
-                out->as.scalar = inputs->frame;
-                return FW_BC3_OK;
-            case FW_BC3_INPUT_X:
-                out->as.scalar = inputs->x;
-                return FW_BC3_OK;
-            case FW_BC3_INPUT_Y:
-                out->as.scalar = inputs->y;
-                return FW_BC3_OK;
-            case FW_BC3_INPUT_WIDTH:
-                out->as.scalar = inputs->width;
-                return FW_BC3_OK;
-            case FW_BC3_INPUT_HEIGHT:
-                out->as.scalar = inputs->height;
-                return FW_BC3_OK;
-            default:
-                return FW_BC3_ERR_INVALID_SLOT;
-        }
-    }
-
-    if (slot->tag == FW_BC3_SLOT_PARAM) {
-        if (slot->index >= runtime->program->param_count) {
-            return FW_BC3_ERR_INVALID_SLOT;
-        }
-        out->tag = FW_BC3_VALUE_SCALAR;
-        out->as.scalar = runtime->param_values[slot->index];
-        return FW_BC3_OK;
-    }
-
-    if (slot->tag == FW_BC3_SLOT_FRAME_LET) {
-        if (slot->index >= runtime->program->frame_let_count) {
-            return FW_BC3_ERR_INVALID_SLOT;
-        }
-        *out = runtime->frame_values[slot->index];
-        return FW_BC3_OK;
-    }
-
-    if (slot->tag == FW_BC3_SLOT_LET) {
-        if (slot->index >= let_limit) {
-            return FW_BC3_ERR_INVALID_SLOT;
-        }
-        *out = runtime->let_values[slot->index];
-        return FW_BC3_OK;
-    }
-
-    return FW_BC3_ERR_INVALID_SLOT;
-}
-
-static fw_bc3_status_t fw_bc3_eval_expression(
+
+static fw_bc3_status_t __attribute__((flatten)) IRAM_ATTR fw_bc3_eval_expression(
     fw_bc3_runtime_t *runtime,
     uint16_t expr_index,
     const fw_bc3_inputs_t *inputs,
@@ -1380,128 +1541,185 @@ static fw_bc3_status_t fw_bc3_eval_expression(
         return FW_BC3_ERR_FORMAT;
     }
 
-    const fw_bc3_expr_view_t *expr = &runtime->program->expressions[expr_index];
-    if (expr->max_stack_depth > FW_BC3_MAX_EXPR_STACK) {
-        return FW_BC3_ERR_LIMIT;
-    }
-    if ((size_t)expr->byte_offset >= runtime->program->blob_len) {
-        return FW_BC3_ERR_TRUNCATED;
-    }
+    const fw_bc3_decoded_op_t *op = &runtime->program->decoded_ops[runtime->program->expr_op_start[expr_index]];
+    fw_bc3_value_t *stack = runtime->expr_stack;
+    uint16_t sp = 0;
 
-    fw_bc3_cursor_t cursor = {
-        .base = runtime->program->blob,
-        .cur = runtime->program->blob + expr->byte_offset,
-        .end = runtime->program->blob + runtime->program->blob_len,
+    // Computed-goto dispatch table — contiguous enum values 0..25 for a compact jump table.
+    static const void *dispatch_table[] = {
+        [FW_BC3_DOP_PUSH_SCALAR_LIT] = &&dop_push_scalar_lit,
+        [FW_BC3_DOP_PUSH_INPUT]      = &&dop_push_input,
+        [FW_BC3_DOP_PUSH_PARAM]      = &&dop_push_param,
+        [FW_BC3_DOP_PUSH_FRAME_LET]  = &&dop_push_frame_let,
+        [FW_BC3_DOP_PUSH_LET]        = &&dop_push_let,
+        [FW_BC3_DOP_NEGATE]          = &&dop_negate,
+        [FW_BC3_DOP_ADD]             = &&dop_add,
+        [FW_BC3_DOP_SUB]             = &&dop_sub,
+        [FW_BC3_DOP_MUL]             = &&dop_mul,
+        [FW_BC3_DOP_DIV]             = &&dop_div,
+        [FW_BC3_DOP_CALL_BUILTIN]    = &&dop_call_builtin,
+        [FW_BC3_DOP_BUILTIN_SIN]     = &&dop_sin,
+        [FW_BC3_DOP_BUILTIN_COS]     = &&dop_cos,
+        [FW_BC3_DOP_BUILTIN_SQRT]    = &&dop_sqrt,
+        [FW_BC3_DOP_BUILTIN_ABS]     = &&dop_abs,
+        [FW_BC3_DOP_BUILTIN_FLOOR]   = &&dop_floor,
+        [FW_BC3_DOP_BUILTIN_FRACT]   = &&dop_fract,
+        [FW_BC3_DOP_BUILTIN_LN]      = &&dop_ln,
+        [FW_BC3_DOP_BUILTIN_LOG]     = &&dop_log,
+        [FW_BC3_DOP_BUILTIN_MIN]     = &&dop_min,
+        [FW_BC3_DOP_BUILTIN_MAX]     = &&dop_max,
+        [FW_BC3_DOP_BUILTIN_CLAMP]   = &&dop_clamp,
+        [FW_BC3_DOP_BUILTIN_SMOOTHSTEP] = &&dop_smoothstep,
+        [FW_BC3_DOP_BUILTIN_VEC2]    = &&dop_vec2,
+        [FW_BC3_DOP_BUILTIN_RGBA]    = &&dop_rgba,
+        [FW_BC3_DOP_HALT]            = &&dop_halt,
     };
 
-    uint16_t stack_len = 0;
-    uint16_t i = 0;
-    while (i < expr->instruction_count) {
-        uint8_t opcode = 0;
-        fw_bc3_status_t status = fw_bc3_cursor_read_u8(&cursor, &opcode);
-        if (status != FW_BC3_OK) {
-            return status;
-        }
+#define NEXT() do { ++op; goto *dispatch_table[op->op]; } while(0)
 
-        if (opcode == FW_BC3_OP_PUSH_LITERAL) {
-            fw_bc3_value_t value = {0};
-            status = fw_bc3_parse_runtime_value(&cursor, &value);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-            if (stack_len >= FW_BC3_MAX_EXPR_STACK || stack_len >= expr->max_stack_depth) {
-                return FW_BC3_ERR_STACK_OVERFLOW;
-            }
-            runtime->expr_stack[stack_len] = value;
-            stack_len += 1U;
-        } else if (opcode == FW_BC3_OP_PUSH_SLOT) {
-            fw_bc3_slot_ref_t slot = {0};
-            fw_bc3_value_t value = {0};
-            status = fw_bc3_parse_slot_ref(&cursor, &slot);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-            status = fw_bc3_load_slot(runtime, inputs, &slot, let_limit, &value);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-            if (stack_len >= FW_BC3_MAX_EXPR_STACK || stack_len >= expr->max_stack_depth) {
-                return FW_BC3_ERR_STACK_OVERFLOW;
-            }
-            runtime->expr_stack[stack_len] = value;
-            stack_len += 1U;
-        } else if (opcode == FW_BC3_OP_NEGATE) {
-            if (stack_len < 1U) {
-                return FW_BC3_ERR_STACK_UNDERFLOW;
-            }
-            fw_bc3_value_t *top = &runtime->expr_stack[stack_len - 1U];
-            if (top->tag != FW_BC3_VALUE_SCALAR) {
-                return FW_BC3_ERR_TYPE_MISMATCH;
-            }
-            top->as.scalar = -(top->as.scalar);
-        } else if (
-            opcode == FW_BC3_OP_ADD || opcode == FW_BC3_OP_SUB || opcode == FW_BC3_OP_MUL || opcode == FW_BC3_OP_DIV
-        ) {
-            if (stack_len < 2U) {
-                return FW_BC3_ERR_STACK_UNDERFLOW;
-            }
-            fw_bc3_value_t *lhs_value = &runtime->expr_stack[stack_len - 2U];
-            fw_bc3_value_t *rhs_value = &runtime->expr_stack[stack_len - 1U];
-            if (lhs_value->tag != FW_BC3_VALUE_SCALAR || rhs_value->tag != FW_BC3_VALUE_SCALAR) {
-                return FW_BC3_ERR_TYPE_MISMATCH;
-            }
-            const float lhs = lhs_value->as.scalar;
-            const float rhs = rhs_value->as.scalar;
-            stack_len -= 1U;
-            if (opcode == FW_BC3_OP_ADD) {
-                lhs_value->as.scalar = lhs + rhs;
-            } else if (opcode == FW_BC3_OP_SUB) {
-                lhs_value->as.scalar = lhs - rhs;
-            } else if (opcode == FW_BC3_OP_MUL) {
-                lhs_value->as.scalar = lhs * rhs;
-            } else {
-                lhs_value->as.scalar = (rhs != 0.0f) ? (lhs / rhs) : ((lhs >= 0.0f) ? FLT_MAX : -FLT_MAX);
-            }
-        } else if (opcode == FW_BC3_OP_CALL_BUILTIN) {
-            uint8_t builtin = 0;
-            uint8_t arg_count = 0;
-            fw_bc3_value_t result = {0};
-            status = fw_bc3_cursor_read_u8(&cursor, &builtin);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-            status = fw_bc3_cursor_read_u8(&cursor, &arg_count);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-            if (arg_count == 0U || arg_count > FW_BC3_MAX_CALL_ARGS) {
-                return FW_BC3_ERR_FORMAT;
-            }
-            if (stack_len < arg_count) {
-                return FW_BC3_ERR_STACK_UNDERFLOW;
-            }
-            status = fw_bc3_eval_builtin(builtin, &runtime->expr_stack[stack_len - arg_count], arg_count, &result);
-            if (status != FW_BC3_OK) {
-                return status;
-            }
-            stack_len = (uint16_t)(stack_len - arg_count);
-            runtime->expr_stack[stack_len] = result;
-            stack_len += 1U;
-        } else {
-            return FW_BC3_ERR_INVALID_OPCODE;
-        }
+    goto *dispatch_table[op->op];
 
-        i += 1U;
+dop_push_scalar_lit:
+    stack[sp].tag = FW_BC3_VALUE_SCALAR;
+    stack[sp].as.scalar = op->scalar;
+    sp++;
+    NEXT();
+dop_push_input:
+    stack[sp].tag = FW_BC3_VALUE_SCALAR;
+    stack[sp].as.scalar = ((const float *)inputs)[op->index];
+    sp++;
+    NEXT();
+dop_push_param:
+    stack[sp].tag = FW_BC3_VALUE_SCALAR;
+    stack[sp].as.scalar = runtime->param_values[op->index];
+    sp++;
+    NEXT();
+dop_push_frame_let:
+    stack[sp] = runtime->frame_values[op->index];
+    sp++;
+    NEXT();
+dop_push_let:
+    if (op->index >= let_limit) {
+        return FW_BC3_ERR_INVALID_SLOT;
     }
-
-    if (stack_len != 1U) {
-        return FW_BC3_ERR_FORMAT;
+    stack[sp] = runtime->let_values[op->index];
+    sp++;
+    NEXT();
+dop_negate:
+    stack[sp - 1].as.scalar = -(stack[sp - 1].as.scalar);
+    NEXT();
+dop_add:
+    stack[sp - 2].as.scalar = stack[sp - 2].as.scalar + stack[sp - 1].as.scalar;
+    sp--;
+    NEXT();
+dop_sub:
+    stack[sp - 2].as.scalar = stack[sp - 2].as.scalar - stack[sp - 1].as.scalar;
+    sp--;
+    NEXT();
+dop_mul:
+    stack[sp - 2].as.scalar = stack[sp - 2].as.scalar * stack[sp - 1].as.scalar;
+    sp--;
+    NEXT();
+dop_div: {
+    float rhs = stack[sp - 1].as.scalar;
+    float lhs = stack[sp - 2].as.scalar;
+    stack[sp - 2].as.scalar = (rhs != 0.0f) ? (lhs / rhs) : ((lhs >= 0.0f) ? FLT_MAX : -FLT_MAX);
+    sp--;
+    NEXT();
+}
+dop_call_builtin: {
+    fw_bc3_value_t result = {0};
+    fw_bc3_status_t status = fw_bc3_eval_builtin(
+        op->builtin, &stack[sp - op->arg_count], op->arg_count, &result
+    );
+    if (status != FW_BC3_OK) {
+        return status;
     }
-    *out = runtime->expr_stack[0];
+    sp = sp - op->arg_count;
+    stack[sp] = result;
+    sp++;
+    NEXT();
+}
+dop_sin:
+    stack[sp - 1].as.scalar = fw_bc3_fast_sin(stack[sp - 1].as.scalar);
+    NEXT();
+dop_cos:
+    stack[sp - 1].as.scalar = fw_bc3_fast_cos(stack[sp - 1].as.scalar);
+    NEXT();
+dop_sqrt:
+    stack[sp - 1].as.scalar = dsl_fast_sqrtf(stack[sp - 1].as.scalar);
+    NEXT();
+dop_abs:
+    stack[sp - 1].as.scalar = fabsf(stack[sp - 1].as.scalar);
+    NEXT();
+dop_floor:
+    stack[sp - 1].as.scalar = dsl_fast_floorf(stack[sp - 1].as.scalar);
+    NEXT();
+dop_fract: {
+    float x = stack[sp - 1].as.scalar;
+    stack[sp - 1].as.scalar = x - dsl_fast_floorf(x);
+    NEXT();
+}
+dop_ln:
+    stack[sp - 1].as.scalar = dsl_fast_logf(stack[sp - 1].as.scalar);
+    NEXT();
+dop_log:
+    stack[sp - 1].as.scalar = dsl_fast_log10f(stack[sp - 1].as.scalar);
+    NEXT();
+dop_min:
+    stack[sp - 2].as.scalar = fminf(stack[sp - 2].as.scalar, stack[sp - 1].as.scalar);
+    sp--;
+    NEXT();
+dop_max:
+    stack[sp - 2].as.scalar = fmaxf(stack[sp - 2].as.scalar, stack[sp - 1].as.scalar);
+    sp--;
+    NEXT();
+dop_clamp: {
+    float x = stack[sp - 3].as.scalar;
+    float lo = stack[sp - 2].as.scalar;
+    float hi = stack[sp - 1].as.scalar;
+    stack[sp - 3].as.scalar = fminf(fmaxf(x, lo), hi);
+    sp -= 2;
+    NEXT();
+}
+dop_smoothstep: {
+    float edge0 = stack[sp - 3].as.scalar;
+    float edge1 = stack[sp - 2].as.scalar;
+    float x = stack[sp - 1].as.scalar;
+    stack[sp - 3].as.scalar = fw_bc3_smoothstep(edge0, edge1, x);
+    sp -= 2;
+    NEXT();
+}
+dop_vec2: {
+    float x_val = stack[sp - 2].as.scalar;
+    float y_val = stack[sp - 1].as.scalar;
+    stack[sp - 2].tag = FW_BC3_VALUE_VEC2;
+    stack[sp - 2].as.vec2.x = x_val;
+    stack[sp - 2].as.vec2.y = y_val;
+    sp--;
+    NEXT();
+}
+dop_rgba: {
+    float r = stack[sp - 4].as.scalar;
+    float g = stack[sp - 3].as.scalar;
+    float b = stack[sp - 2].as.scalar;
+    float a = stack[sp - 1].as.scalar;
+    stack[sp - 4].tag = FW_BC3_VALUE_RGBA;
+    stack[sp - 4].as.rgba.r = r;
+    stack[sp - 4].as.rgba.g = g;
+    stack[sp - 4].as.rgba.b = b;
+    stack[sp - 4].as.rgba.a = a;
+    sp -= 3;
+    NEXT();
+}
+dop_halt:
+    *out = stack[0];
     return FW_BC3_OK;
+
+#undef NEXT
 }
 
-static fw_bc3_status_t fw_bc3_execute_statement_block(
+static fw_bc3_status_t IRAM_ATTR fw_bc3_execute_statement_block(
     fw_bc3_runtime_t *runtime,
     uint16_t start,
     uint16_t count,
@@ -1655,7 +1873,7 @@ static fw_bc3_status_t fw_bc3_execute_statement_block(
     return FW_BC3_OK;
 }
 
-static fw_bc3_status_t fw_bc3_evaluate_params(
+static fw_bc3_status_t IRAM_ATTR fw_bc3_evaluate_params(
     fw_bc3_runtime_t *runtime,
     const fw_bc3_inputs_t *inputs,
     fw_bc3_param_eval_mode_t mode
@@ -1795,7 +2013,7 @@ fw_bc3_status_t fw_bc3_runtime_begin_frame(fw_bc3_runtime_t *runtime, float time
     );
 }
 
-fw_bc3_status_t fw_bc3_runtime_eval_pixel(fw_bc3_runtime_t *runtime, float x, float y, fw_bc3_color_t *out_color) {
+fw_bc3_status_t IRAM_ATTR fw_bc3_runtime_eval_pixel(fw_bc3_runtime_t *runtime, float x, float y, fw_bc3_color_t *out_color) {
     if (runtime == NULL || runtime->program == NULL || out_color == NULL) {
         return FW_BC3_ERR_INVALID_ARG;
     }

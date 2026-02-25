@@ -12,6 +12,7 @@
 #define FW_BC3_MAX_STATEMENTS 512U
 #define FW_BC3_MAX_EXPR_INSTRUCTIONS 256U
 #define FW_BC3_MAX_EXPR_STACK 32U
+#define FW_BC3_MAX_DECODED_OPS 2048U
 #define FW_BC3_MAX_STATEMENT_DEPTH 16U
 #define FW_BC3_MAX_LOOP_ITERATIONS 1024U
 #define FW_BC3_DEFAULT_STATEMENT_BUDGET 8192U
@@ -103,6 +104,17 @@ typedef struct {
 } fw_bc3_stmt_view_t;
 
 typedef struct {
+    uint8_t op;        // decoded opcode (fw_bc3_decoded_opcode_t in .c)
+    uint8_t builtin;   // CALL_BUILTIN: builtin id
+    uint8_t arg_count; // CALL_BUILTIN: argument count
+    uint8_t _pad;
+    union {
+        float scalar;           // PUSH_SCALAR_LIT
+        uint16_t index;         // PUSH_INPUT/PARAM/FRAME_LET/LET: slot index
+    };
+} fw_bc3_decoded_op_t;
+
+typedef struct {
     const uint8_t *blob;
     size_t blob_len;
     uint16_t param_count;
@@ -122,6 +134,10 @@ typedef struct {
     uint16_t stmt_count;
     fw_bc3_expr_view_t expressions[FW_BC3_MAX_EXPRESSIONS];
     fw_bc3_stmt_view_t statements[FW_BC3_MAX_STATEMENTS];
+    uint16_t decoded_op_count;
+    uint16_t expr_op_start[FW_BC3_MAX_EXPRESSIONS];
+    uint16_t expr_op_count[FW_BC3_MAX_EXPRESSIONS];
+    fw_bc3_decoded_op_t decoded_ops[FW_BC3_MAX_DECODED_OPS];
 } fw_bc3_program_t;
 
 typedef struct {
