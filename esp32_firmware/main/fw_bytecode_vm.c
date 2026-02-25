@@ -1,5 +1,6 @@
 #include "fw_bytecode_vm.h"
 
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <string.h>
@@ -8,11 +9,6 @@
 #define FW_BC3_INPUT_SLOT_COUNT 6U
 #define FW_BC3_MAX_CALL_ARGS 8U
 #define FW_BC3_BUILTIN_COUNT 20U
-#define FW_BC3_FIXED_FRAC_BITS 16
-#define FW_BC3_FIXED_ONE (1 << FW_BC3_FIXED_FRAC_BITS)
-#define FW_BC3_FIXED_INV_ONE (1.0f / (float)FW_BC3_FIXED_ONE)
-#define FW_BC3_FIXED_MAX_FLOAT 32767.99998f
-#define FW_BC3_FIXED_MIN_FLOAT -32768.0f
 
 typedef enum {
     FW_BC3_OP_PUSH_LITERAL = 1,
@@ -76,12 +72,12 @@ typedef struct {
 } fw_bc3_slot_ref_t;
 
 typedef struct {
-    int32_t time;
-    int32_t frame;
-    int32_t x;
-    int32_t y;
-    int32_t width;
-    int32_t height;
+    float time;
+    float frame;
+    float x;
+    float y;
+    float width;
+    float height;
 } fw_bc3_inputs_t;
 
 typedef struct {
@@ -98,43 +94,10 @@ typedef enum {
     FW_BC3_PARAM_EVAL_DYNAMIC_Y_ONLY = 4,
 } fw_bc3_param_eval_mode_t;
 
-static inline int32_t fw_bc3_fixed_from_float(float value) {
-    if (value >= FW_BC3_FIXED_MAX_FLOAT) {
-        return INT32_MAX;
-    }
-    if (value <= FW_BC3_FIXED_MIN_FLOAT) {
-        return INT32_MIN;
-    }
-    return (int32_t)(value * (float)FW_BC3_FIXED_ONE);
-}
-
-static inline float fw_bc3_fixed_to_float(int32_t value) {
-    return (float)value * FW_BC3_FIXED_INV_ONE;
-}
-
-static inline int32_t fw_bc3_fixed_add(int32_t a, int32_t b) {
-    return a + b;
-}
-
-static inline int32_t fw_bc3_fixed_sub(int32_t a, int32_t b) {
-    return a - b;
-}
-
-static inline int32_t fw_bc3_fixed_mul(int32_t a, int32_t b) {
-    return (int32_t)(((int64_t)a * (int64_t)b) >> FW_BC3_FIXED_FRAC_BITS);
-}
-
-static inline int32_t fw_bc3_fixed_div(int32_t a, int32_t b) {
-    if (b == 0) {
-        return (a >= 0) ? INT32_MAX : INT32_MIN;
-    }
-    return (int32_t)(((int64_t)a << FW_BC3_FIXED_FRAC_BITS) / b);
-}
-
 static fw_bc3_value_t fw_bc3_make_scalar(float scalar) {
     fw_bc3_value_t value = {
         .tag = FW_BC3_VALUE_SCALAR,
-        .as.scalar = fw_bc3_fixed_from_float(scalar),
+        .as.scalar = scalar,
     };
     return value;
 }
@@ -1014,14 +977,6 @@ static fw_bc3_status_t fw_bc3_value_as_scalar(const fw_bc3_value_t *value, float
     if (value->tag != FW_BC3_VALUE_SCALAR) {
         return FW_BC3_ERR_TYPE_MISMATCH;
     }
-    *out = fw_bc3_fixed_to_float(value->as.scalar);
-    return FW_BC3_OK;
-}
-
-static fw_bc3_status_t fw_bc3_value_as_scalar_fixed(const fw_bc3_value_t *value, int32_t *out) {
-    if (value->tag != FW_BC3_VALUE_SCALAR) {
-        return FW_BC3_ERR_TYPE_MISMATCH;
-    }
     *out = value->as.scalar;
     return FW_BC3_OK;
 }
@@ -1102,116 +1057,82 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             }
             *out = fw_bc3_make_scalar(dsl_fast_log10f(a0));
             return FW_BC3_OK;
-        case FW_BC3_BUILTIN_ABS: {
-            int32_t fixed_a0 = 0;
+        case FW_BC3_BUILTIN_ABS:
             if (arg_count != 1U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_a0);
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            out->tag = FW_BC3_VALUE_SCALAR;
-            if (fixed_a0 == INT32_MIN) {
-                out->as.scalar = INT32_MAX;
-            } else if (fixed_a0 < 0) {
-                out->as.scalar = -fixed_a0;
-            } else {
-                out->as.scalar = fixed_a0;
-            }
+            *out = fw_bc3_make_scalar(fabsf(a0));
             return FW_BC3_OK;
-        }
-        case FW_BC3_BUILTIN_FLOOR: {
-            int32_t floor_input = 0;
+        case FW_BC3_BUILTIN_FLOOR:
             if (arg_count != 1U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[0], &floor_input);
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            out->tag = FW_BC3_VALUE_SCALAR;
-            out->as.scalar = floor_input & ~((int32_t)(FW_BC3_FIXED_ONE - 1));
+            *out = fw_bc3_make_scalar(dsl_fast_floorf(a0));
             return FW_BC3_OK;
-        }
-        case FW_BC3_BUILTIN_FRACT: {
-            int32_t fract_input = 0;
+        case FW_BC3_BUILTIN_FRACT:
             if (arg_count != 1U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[0], &fract_input);
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            out->tag = FW_BC3_VALUE_SCALAR;
-            out->as.scalar = fw_bc3_fixed_sub(fract_input, fract_input & ~((int32_t)(FW_BC3_FIXED_ONE - 1)));
+            *out = fw_bc3_make_scalar(a0 - dsl_fast_floorf(a0));
             return FW_BC3_OK;
-        }
-        case FW_BC3_BUILTIN_MIN: {
-            int32_t fixed_min_a = 0;
-            int32_t fixed_min_b = 0;
+        case FW_BC3_BUILTIN_MIN:
             if (arg_count != 2U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_min_a);
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[1], &fixed_min_b);
+            status = fw_bc3_value_as_scalar(&args[1], &a1);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            out->tag = FW_BC3_VALUE_SCALAR;
-            out->as.scalar = (fixed_min_a < fixed_min_b) ? fixed_min_a : fixed_min_b;
+            *out = fw_bc3_make_scalar(fminf(a0, a1));
             return FW_BC3_OK;
-        }
-        case FW_BC3_BUILTIN_MAX: {
-            int32_t fixed_max_a = 0;
-            int32_t fixed_max_b = 0;
+        case FW_BC3_BUILTIN_MAX:
             if (arg_count != 2U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_max_a);
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[1], &fixed_max_b);
+            status = fw_bc3_value_as_scalar(&args[1], &a1);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            out->tag = FW_BC3_VALUE_SCALAR;
-            out->as.scalar = (fixed_max_a > fixed_max_b) ? fixed_max_a : fixed_max_b;
+            *out = fw_bc3_make_scalar(fmaxf(a0, a1));
             return FW_BC3_OK;
-        }
-        case FW_BC3_BUILTIN_CLAMP: {
-            int32_t fixed_clamp_value = 0;
-            int32_t fixed_clamp_min = 0;
-            int32_t fixed_clamp_max = 0;
+        case FW_BC3_BUILTIN_CLAMP:
             if (arg_count != 3U) {
                 return FW_BC3_ERR_FORMAT;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[0], &fixed_clamp_value);
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[1], &fixed_clamp_min);
+            status = fw_bc3_value_as_scalar(&args[1], &a1);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            status = fw_bc3_value_as_scalar_fixed(&args[2], &fixed_clamp_max);
+            status = fw_bc3_value_as_scalar(&args[2], &a2);
             if (status != FW_BC3_OK) {
                 return status;
             }
-            out->tag = FW_BC3_VALUE_SCALAR;
-            if (fixed_clamp_value < fixed_clamp_min) {
-                out->as.scalar = fixed_clamp_min;
-            } else if (fixed_clamp_value > fixed_clamp_max) {
-                out->as.scalar = fixed_clamp_max;
-            } else {
-                out->as.scalar = fixed_clamp_value;
-            }
+            *out = fw_bc3_make_scalar(fminf(fmaxf(a0, a1), a2));
             return FW_BC3_OK;
-        }
         case FW_BC3_BUILTIN_SMOOTHSTEP:
             if (arg_count != 3U) {
                 return FW_BC3_ERR_FORMAT;
@@ -1517,7 +1438,7 @@ static fw_bc3_status_t fw_bc3_eval_expression(
             if (top->tag != FW_BC3_VALUE_SCALAR) {
                 return FW_BC3_ERR_TYPE_MISMATCH;
             }
-            top->as.scalar = fw_bc3_fixed_sub(0, top->as.scalar);
+            top->as.scalar = -(top->as.scalar);
         } else if (
             opcode == FW_BC3_OP_ADD || opcode == FW_BC3_OP_SUB || opcode == FW_BC3_OP_MUL || opcode == FW_BC3_OP_DIV
         ) {
@@ -1529,17 +1450,17 @@ static fw_bc3_status_t fw_bc3_eval_expression(
             if (lhs_value->tag != FW_BC3_VALUE_SCALAR || rhs_value->tag != FW_BC3_VALUE_SCALAR) {
                 return FW_BC3_ERR_TYPE_MISMATCH;
             }
-            const int32_t lhs = lhs_value->as.scalar;
-            const int32_t rhs = rhs_value->as.scalar;
+            const float lhs = lhs_value->as.scalar;
+            const float rhs = rhs_value->as.scalar;
             stack_len -= 1U;
             if (opcode == FW_BC3_OP_ADD) {
-                lhs_value->as.scalar = fw_bc3_fixed_add(lhs, rhs);
+                lhs_value->as.scalar = lhs + rhs;
             } else if (opcode == FW_BC3_OP_SUB) {
-                lhs_value->as.scalar = fw_bc3_fixed_sub(lhs, rhs);
+                lhs_value->as.scalar = lhs - rhs;
             } else if (opcode == FW_BC3_OP_MUL) {
-                lhs_value->as.scalar = fw_bc3_fixed_mul(lhs, rhs);
+                lhs_value->as.scalar = lhs * rhs;
             } else {
-                lhs_value->as.scalar = fw_bc3_fixed_div(lhs, rhs);
+                lhs_value->as.scalar = (rhs != 0.0f) ? (lhs / rhs) : ((lhs >= 0.0f) ? FLT_MAX : -FLT_MAX);
             }
         } else if (opcode == FW_BC3_OP_CALL_BUILTIN) {
             uint8_t builtin = 0;
@@ -1653,7 +1574,7 @@ static fw_bc3_status_t fw_bc3_execute_statement_block(
                 if (condition.tag != FW_BC3_VALUE_SCALAR) {
                     return FW_BC3_ERR_TYPE_MISMATCH;
                 }
-                if (condition.as.scalar > 0) {
+                if (condition.as.scalar > 0.0f) {
                     status = fw_bc3_execute_statement_block(
                         runtime,
                         stmt->as.if_stmt.then_start,
@@ -1700,7 +1621,7 @@ static fw_bc3_status_t fw_bc3_execute_statement_block(
                 while (iter < end_value) {
                     const fw_bc3_value_t index_value = {
                         .tag = FW_BC3_VALUE_SCALAR,
-                        .as.scalar = (int32_t)(iter << FW_BC3_FIXED_FRAC_BITS),
+                        .as.scalar = (float)iter,
                     };
                     runtime->let_values[stmt->as.for_stmt.index_slot] = index_value;
                     if (frame_mode) {
@@ -1801,15 +1722,11 @@ fw_bc3_status_t fw_bc3_runtime_init(fw_bc3_runtime_t *runtime, const fw_bc3_prog
     runtime->program = program;
     runtime->width = (float)width;
     runtime->height = (float)height;
-    runtime->width_fixed = fw_bc3_fixed_from_float((float)width);
-    runtime->height_fixed = fw_bc3_fixed_from_float((float)height);
-    runtime->time_fixed = 0;
-    runtime->frame_fixed = 0;
     runtime->has_dynamic_params = false;
     runtime->has_x_dynamic_params = false;
     runtime->has_y_only_dynamic_params = false;
     runtime->y_only_params_cache_valid = false;
-    runtime->y_only_params_cached_y = 0;
+    runtime->y_only_params_cached_y = 0.0f;
 
     uint16_t i = 0;
     while (i < program->param_count) {
@@ -1840,19 +1757,17 @@ fw_bc3_status_t fw_bc3_runtime_begin_frame(fw_bc3_runtime_t *runtime, float time
 
     runtime->time_seconds = time_seconds;
     runtime->frame_counter = (float)frame_counter;
-    runtime->time_fixed = fw_bc3_fixed_from_float(time_seconds);
-    runtime->frame_fixed = fw_bc3_fixed_from_float((float)frame_counter);
     runtime->y_only_params_cache_valid = false;
     fw_bc3_reset_value_slots(runtime->frame_values, FW_BC3_MAX_LET_SLOTS);
     fw_bc3_reset_value_slots(runtime->let_values, FW_BC3_MAX_LET_SLOTS);
 
     fw_bc3_inputs_t inputs = {
-        .time = runtime->time_fixed,
-        .frame = runtime->frame_fixed,
-        .x = 0,
-        .y = 0,
-        .width = runtime->width_fixed,
-        .height = runtime->height_fixed,
+        .time = time_seconds,
+        .frame = (float)frame_counter,
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = runtime->width,
+        .height = runtime->height,
     };
 
     fw_bc3_status_t status = fw_bc3_evaluate_params(runtime, &inputs, FW_BC3_PARAM_EVAL_STATIC_ONLY);
@@ -1885,26 +1800,24 @@ fw_bc3_status_t fw_bc3_runtime_eval_pixel(fw_bc3_runtime_t *runtime, float x, fl
         return FW_BC3_ERR_INVALID_ARG;
     }
 
-    const int32_t x_fixed = fw_bc3_fixed_from_float(x);
-    const int32_t y_fixed = fw_bc3_fixed_from_float(y);
     fw_bc3_inputs_t inputs = {
-        .time = runtime->time_fixed,
-        .frame = runtime->frame_fixed,
-        .x = x_fixed,
-        .y = y_fixed,
-        .width = runtime->width_fixed,
-        .height = runtime->height_fixed,
+        .time = runtime->time_seconds,
+        .frame = runtime->frame_counter,
+        .x = x,
+        .y = y,
+        .width = runtime->width,
+        .height = runtime->height,
     };
 
     if (runtime->has_dynamic_params) {
         if (runtime->has_y_only_dynamic_params &&
-            (!runtime->y_only_params_cache_valid || runtime->y_only_params_cached_y != y_fixed)) {
+            (!runtime->y_only_params_cache_valid || runtime->y_only_params_cached_y != y)) {
             fw_bc3_status_t status = fw_bc3_evaluate_params(runtime, &inputs, FW_BC3_PARAM_EVAL_DYNAMIC_Y_ONLY);
             if (status != FW_BC3_OK) {
                 return status;
             }
             runtime->y_only_params_cache_valid = true;
-            runtime->y_only_params_cached_y = y_fixed;
+            runtime->y_only_params_cached_y = y;
         }
 
         if (runtime->has_x_dynamic_params) {

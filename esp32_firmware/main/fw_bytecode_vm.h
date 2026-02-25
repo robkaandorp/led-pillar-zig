@@ -56,7 +56,7 @@ typedef struct {
 typedef struct {
     fw_bc3_value_tag_t tag;
     union {
-        int32_t scalar; // Q16.16 fixed-point
+        float scalar;
         fw_bc3_vec2_t vec2;
         fw_bc3_color_t rgba;
     } as;
@@ -130,16 +130,12 @@ typedef struct {
     float height;
     float time_seconds;
     float frame_counter;
-    int32_t width_fixed;
-    int32_t height_fixed;
-    int32_t time_fixed;
-    int32_t frame_fixed;
     bool has_dynamic_params;
     bool has_x_dynamic_params;
     bool has_y_only_dynamic_params;
     bool y_only_params_cache_valid;
-    int32_t y_only_params_cached_y;
-    int32_t param_values[FW_BC3_MAX_PARAMS];
+    float y_only_params_cached_y;
+    float param_values[FW_BC3_MAX_PARAMS];
     fw_bc3_value_t frame_values[FW_BC3_MAX_LET_SLOTS];
     fw_bc3_value_t let_values[FW_BC3_MAX_LET_SLOTS];
     fw_bc3_value_t expr_stack[FW_BC3_MAX_EXPR_STACK];
