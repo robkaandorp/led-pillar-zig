@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <math.h>
 #include <string.h>
+#include "fw_fast_math.h"
 
 #define FW_BC3_INPUT_SLOT_COUNT 6U
 #define FW_BC3_MAX_CALL_ARGS 8U
@@ -955,7 +956,7 @@ static float fw_bc3_hash_coords01(int32_t x, int32_t y, uint32_t seed) {
 }
 
 static float fw_bc3_vec2_length(fw_bc3_vec2_t vec) {
-    return sqrtf((vec.x * vec.x) + (vec.y * vec.y));
+    return dsl_fast_sqrtf((vec.x * vec.x) + (vec.y * vec.y));
 }
 
 static float fw_bc3_wrapped_delta_x(float px, float center_x, float width) {
@@ -971,25 +972,11 @@ static float fw_bc3_wrapped_delta_x(float px, float center_x, float width) {
 }
 
 static float fw_bc3_fast_sin(float x) {
-    const float two_pi = 6.2831853071795864769f;
-    const float inv_two_pi = 0.1591549430918953358f;
-    const float pi = 3.14159265358979323846f;
-    const float b = 1.2732395447351626862f;   // 4/pi
-    const float c = -0.4052847345693510858f;  // -4/(pi*pi)
-    const float p = 0.225f;
-
-    x = x - floorf(x * inv_two_pi) * two_pi;
-    if (x > pi) {
-        x -= two_pi;
-    }
-
-    const float y = (b * x) + (c * x * fabsf(x));
-    return (p * ((y * fabsf(y)) - y)) + y;
+    return dsl_fast_sinf(x);
 }
 
 static float fw_bc3_fast_cos(float x) {
-    const float pi_over_2 = 1.5707963267948966192f;
-    return fw_bc3_fast_sin(x + pi_over_2);
+    return dsl_fast_cosf(x);
 }
 
 static fw_bc3_color_t fw_bc3_color_clamped(fw_bc3_color_t color) {
@@ -1093,7 +1080,7 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(sqrtf(a0));
+            *out = fw_bc3_make_scalar(dsl_fast_sqrtf(a0));
             return FW_BC3_OK;
         case FW_BC3_BUILTIN_LN:
             if (arg_count != 1U) {
@@ -1103,7 +1090,7 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(logf(a0));
+            *out = fw_bc3_make_scalar(dsl_fast_logf(a0));
             return FW_BC3_OK;
         case FW_BC3_BUILTIN_LOG:
             if (arg_count != 1U) {
@@ -1113,7 +1100,7 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             if (status != FW_BC3_OK) {
                 return status;
             }
-            *out = fw_bc3_make_scalar(log10f(a0));
+            *out = fw_bc3_make_scalar(dsl_fast_log10f(a0));
             return FW_BC3_OK;
         case FW_BC3_BUILTIN_ABS: {
             int32_t fixed_a0 = 0;
