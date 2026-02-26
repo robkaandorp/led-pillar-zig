@@ -63,9 +63,9 @@ https://github.com/robkaandorp/tcp_led_stream
   - `rain-ripple`: raindrop ripples across the display
   - `infinite-line [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
   - `infinite-lines [line_count] [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
-  - `dsl-file <path-to-effect.dsl>` (also writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits auto-wired native shader C to `esp32_firmware/main/generated/dsl_shader_generated.c`)
-  - `dsl-compile <path-to-effect.dsl>` (compile-only mode; writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits `esp32_firmware/main/generated/dsl_shader_generated.c` without opening TCP)
-  - `bytecode-upload <path-to-bytecode.bin|path-to-effect.dsl>` (protocol v3 bytecode upload + activate; `.dsl` is compiled first and also emits `esp32_firmware/main/generated/dsl_shader_generated.c`, then monitors shader FPS + slow frames until you press Enter)
+  - `dsl-file <path-to-effect.dsl>` (also writes compiled reference bytecode to `bytecode/<dsl-name>.bin`)
+  - `dsl-compile <path-to-effect.dsl>` (compile-only mode; writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits native shader C to `esp32_firmware/main/generated/dsl_shader_generated.c` without opening TCP)
+  - `bytecode-upload <path-to-bytecode.bin|path-to-effect.dsl>` (protocol v3 bytecode upload + activate; `.dsl` is compiled first, then monitors shader FPS + slow frames until you press Enter)
   - `native-shader-activate` (protocol v3 command to activate built-in firmware native C shader; monitors shader FPS + slow frames until you press Enter)
   - `stop` (protocol v3 command to stop the currently running shader and clear the display to black)
   - `firmware-upload <path-to-led_pillar_firmware.bin>` (protocol v3 push OTA upload command)

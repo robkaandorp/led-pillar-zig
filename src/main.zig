@@ -189,7 +189,6 @@ fn runBytecodeUpload(host: []const u8, port: u16, bytecode_file_path: []const u8
         defer arena.deinit();
         const source = try std.fs.cwd().readFileAlloc(arena.allocator(), bytecode_file_path, std.math.maxInt(usize));
         const program = try led.dsl_parser.parseAndValidate(arena.allocator(), source);
-        try writeDslCReference(program, bytecode_file_path);
         var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
         defer evaluator.deinit();
         const payload_writer = compiled_payload.writer(std.heap.page_allocator);
@@ -393,7 +392,6 @@ fn runDslFileEffect(
     var evaluator = try led.dsl_runtime.Evaluator.init(std.heap.page_allocator, program);
     defer evaluator.deinit();
     try writeDslBytecodeReference(&evaluator, dsl_file_path);
-    try writeDslCReference(program, dsl_file_path);
 
     const pixel_count = @as(usize, @intCast(display.pixel_count));
     const frame = try std.heap.page_allocator.alloc(led.effects.Color, pixel_count);
