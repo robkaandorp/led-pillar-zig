@@ -8,6 +8,25 @@ config FW_WIFI_PASSWORD
     string "WiFi password"
     default ""
 
+config FW_WIFI_AP_SSID
+    string "WiFi AP SSID"
+    default "led-pillar"
+    help
+        SSID for the ESP32's access point.
+
+config FW_WIFI_AP_PASSWORD
+    string "WiFi AP Password"
+    default "ledpillar"
+    help
+        Password for the ESP32's access point (min 8 chars for WPA2).
+
+config FW_WIFI_AP_MAX_CONN
+    int "Max AP connections"
+    default 2
+    range 1 4
+    help
+        Maximum number of clients that can connect to the AP.
+
 config FW_HOSTNAME
     string "Device hostname"
     default "led-pillar"

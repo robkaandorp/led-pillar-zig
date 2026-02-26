@@ -16,6 +16,7 @@
 static const char *TAG = "fw_main";
 static fw_led_layout_config_t g_fw_layout = {0};
 static esp_netif_t *g_fw_sta_netif = NULL;
+static esp_netif_t *g_fw_ap_netif = NULL;
 
 static void fw_init_nvs(void) {
     esp_err_t ret = nvs_flash_init();
@@ -26,11 +27,33 @@ static void fw_init_nvs(void) {
     ESP_ERROR_CHECK(ret);
 }
 
+static void fw_wifi_ap_event_handler(void *arg, esp_event_base_t event_base,
+                                     int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
+        wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *)event_data;
+        ESP_LOGI(TAG, "AP: station " MACSTR " joined, AID=%d",
+                 MAC2STR(event->mac), event->aid);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        wifi_event_ap_stadisconnected_t *event = (wifi_event_ap_stadisconnected_t *)event_data;
+        ESP_LOGI(TAG, "AP: station " MACSTR " left, AID=%d",
+                 MAC2STR(event->mac), event->aid);
+    }
+}
+
 static void fw_init_network(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     g_fw_sta_netif = esp_netif_create_default_wifi_sta();
     ESP_ERROR_CHECK(g_fw_sta_netif != NULL ? ESP_OK : ESP_FAIL);
+    g_fw_ap_netif = esp_netif_create_default_wifi_ap();
+    ESP_ERROR_CHECK(g_fw_ap_netif != NULL ? ESP_OK : ESP_FAIL);
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED,
+        &fw_wifi_ap_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, WIFI_EVENT_AP_STADISCONNECTED,
+        &fw_wifi_ap_event_handler, NULL, NULL));
 }
 
 static void fw_init_hostname_and_mdns(void) {
@@ -52,26 +75,40 @@ static void fw_init_hostname_and_mdns(void) {
 #endif
 }
 
-static void fw_init_wifi_sta(void) {
+static void fw_init_wifi(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    wifi_config_t wifi_config = {0};
+    wifi_config_t sta_config = {0};
+    wifi_config_t ap_config = {0};
 
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
-    strlcpy((char *)wifi_config.sta.ssid, CONFIG_FW_WIFI_SSID, sizeof(wifi_config.sta.ssid));
-    strlcpy((char *)wifi_config.sta.password, CONFIG_FW_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    /* STA config */
+    strlcpy((char *)sta_config.sta.ssid, CONFIG_FW_WIFI_SSID, sizeof(sta_config.sta.ssid));
+    strlcpy((char *)sta_config.sta.password, CONFIG_FW_WIFI_PASSWORD, sizeof(sta_config.sta.password));
+    sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    /* AP config */
+    strlcpy((char *)ap_config.ap.ssid, CONFIG_FW_WIFI_AP_SSID, sizeof(ap_config.ap.ssid));
+    ap_config.ap.ssid_len = (uint8_t)strlen(CONFIG_FW_WIFI_AP_SSID);
+    strlcpy((char *)ap_config.ap.password, CONFIG_FW_WIFI_AP_PASSWORD, sizeof(ap_config.ap.password));
+    ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    ap_config.ap.max_connection = CONFIG_FW_WIFI_AP_MAX_CONN;
+    ap_config.ap.channel = 0;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
+    ESP_LOGI(TAG, "WiFi AP started: SSID=\"%s\", IP=192.168.4.1", CONFIG_FW_WIFI_AP_SSID);
+
     if (CONFIG_FW_WIFI_SSID[0] == '\0') {
-        ESP_LOGW(TAG, "CONFIG_FW_WIFI_SSID is empty; WiFi connect skipped");
+        ESP_LOGW(TAG, "CONFIG_FW_WIFI_SSID is empty; WiFi STA connect skipped");
         return;
     }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_LOGI(TAG, "WiFi station init complete (connection attempt is best-effort)");
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+    ESP_LOGI(TAG, "WiFi STA init complete (connection attempt is best-effort)");
     (void)esp_wifi_connect();
 }
 
@@ -113,7 +150,7 @@ void app_main(void) {
     fw_init_led_layout();
     fw_init_network();
     fw_init_hostname_and_mdns();
-    fw_init_wifi_sta();
+    fw_init_wifi();
     ESP_ERROR_CHECK(fw_tcp_server_start(&g_fw_layout, FW_TCP_DEFAULT_PORT));
     fw_ota_init();
     ESP_LOGI(TAG, "Scaffold initialization complete");
