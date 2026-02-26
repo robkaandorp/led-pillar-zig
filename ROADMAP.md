@@ -298,57 +298,7 @@ Extend the DSL language to generate audio waveforms alongside visuals. The ESP32
 
 ---
 
-## Feature 5: On-Device DSL Compiler (Stretch Goal)
-
-### Description
-
-Run a DSL-to-bytecode compiler on the ESP32 itself, so users can paste a DSL script into the telnet session and have it compile and run without a PC.
-
-### Difficulty: **Hard**
-
-### What Needs to Be Done
-
-1. **Port DSL parser to C**: The current parser is written in Zig (`src/dsl_parser.zig`, ~830 lines). It would need to be rewritten in C for the ESP32 firmware.
-   - The parser is a hand-written recursive descent parser
-   - Token scanning, AST construction, validation
-   - ~2000-3000 lines of C estimated
-
-2. **Port bytecode compiler to C**: The runtime/compiler (`src/dsl_runtime.zig`, ~1200 lines) compiles the AST to bytecode. Also needs C port.
-   - Expression compilation, slot allocation, serialization
-   - ~1500-2000 lines of C estimated
-
-3. **Telnet integration**: Add a `compile` command or a multi-line input mode:
-   - User pastes DSL source
-   - End marker (e.g., blank line, `EOF`, or Ctrl+D)
-   - Compile to bytecode in-memory
-   - Activate the compiled shader
-
-4. **Memory management**: The parser/compiler needs temporary allocations:
-   - AST nodes, string storage, bytecode buffer
-   - Estimate: 20-50 KB peak for a complex shader
-   - Must use a scratch allocator and free after compilation
-
-### Choices to Make
-
-- **Q20**: Is the effort of porting ~2000+ lines of Zig parser+compiler to C worthwhile?
-  - *Alternative*: Instead of porting, we could have the phone send the DSL source to the ESP32, which forwards it to a PC for compilation, then receives the bytecode back. But this defeats the "no PC" goal.
-  - *Alternative*: Write a minimal "DSL-lite" parser in C that supports a subset of the language.
-  - *Assumption*: If implemented, do a faithful port of the full parser.
-- **Q21**: Should compiled bytecode be persistable (saved to NVS like the default shader hook)?
-  - *Assumption*: Yes, so you can set a telnet-compiled shader as the default.
-
-### Verification Goals
-
-1. ✅ Paste a simple DSL shader into telnet and it compiles and runs
-2. ✅ Compilation errors are reported with line numbers
-3. ✅ Complex shaders (multi-layer, for loops, if statements) compile correctly
-4. ✅ Compiled bytecode matches the PC-compiled bytecode for the same source
-5. ✅ Memory is fully reclaimed after compilation
-6. ✅ Setting the compiled shader as default persists across reboots
-
----
-
-## Feature 6: Remove Pre-DSL Zig Effect Code
+## Feature 5: Remove Pre-DSL Zig Effect Code
 
 ### Description
 
@@ -441,13 +391,11 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 │    Diff: Easy    │ └───────────┬───────────┘
 └──────────────────┘             │
                                  │
-                    ┌────────────┴────────────┐
-                    │                         │
-                    ▼                         ▼
-          ┌──────────────────┐   ┌────────────────────────┐
-          │ 4. Sound / Audio │   │ 5. On-Device Compiler  │
-          │    Diff: Hard    │   │    Diff: Hard (stretch)│
-          └──────────────────┘   └────────────────────────┘
+                                 ▼
+                    ┌──────────────────┐
+                    │ 4. Sound / Audio │
+                    │    Diff: Medium  │
+                    └──────────────────┘
 ```
 
 ### Rationale
@@ -462,7 +410,7 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 
 4. **Sound** uses the built-in 8-bit DAC (GPIO25) — negligible flash/RAM cost, no Bluetooth complexity. The main unknown is whether 8-bit quality is sufficient; a future upgrade path to an external I2S DAC or Bluetooth A2DP is documented.
 
-5. **On-Device Compiler** is a stretch goal. It's substantial effort (~4000 lines of C) for a "fun to have" feature. Implement only if the other features are stable and there's appetite for it.
+> **Parked**: On-Device DSL Compiler — see [ON_DEVICE_DSL_COMPILER.md](ON_DEVICE_DSL_COMPILER.md)
 
 ---
 
@@ -474,8 +422,7 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 | 2 | WiFi AP Fallback | Easy | ~2-3 | None significant |
 | 3 | Telnet Server | Medium-Hard | ~5-8 (new module) | RAM budget, mutex design |
 | 4 | Sound / Audio (8-bit DAC) | Medium | ~6-8 (new module + DSL ext.) | 8-bit quality, GPIO conflict check |
-| 5 | On-Device DSL Compiler | Hard | ~3-5 (new C modules) | Effort vs. value, RAM for parsing |
-| 6 | Remove Pre-DSL Zig Effects | Easy | ~3 (delete/trim) | Verify no shared utilities lost |
+| 5 | Remove Pre-DSL Zig Effects | Easy | ~3 (delete/trim) | Verify no shared utilities lost |
 
 ---
 
@@ -502,8 +449,8 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 | Q17 | Audio eval on core 0 or core 1? | Sound |
 | Q18 | Add dithering for 8-bit quantization? | Sound |
 | Q19 | Which GPIO for DAC output (GPIO25 vs. GPIO26)? | Sound |
-| Q20 | Port full parser to C or use DSL-lite subset? | On-Device Compiler |
-| Q21 | Persist telnet-compiled bytecode to NVS? | On-Device Compiler |
+
+> On-Device DSL Compiler questions moved to [ON_DEVICE_DSL_COMPILER.md](ON_DEVICE_DSL_COMPILER.md)
 
 ---
 
