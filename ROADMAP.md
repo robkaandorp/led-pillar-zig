@@ -51,13 +51,13 @@ Store all DSL shader files from a folder tree in the firmware as compiled native
 ### Choices to Make
 
 - **Q1**: Should we use a build-time Zig script (a build step in `build.zig`) to compile all DSL files to C, or a separate pre-build script?
-  - *Assumption*: Use a Zig build step for consistency. The build step invokes the DSL compiler for each `.dsl` file and concatenates results.
+  - ✅ **Decided**: Use a Zig build step for consistency. The build step invokes the DSL compiler for each `.dsl` file and concatenates results.
 - **Q2**: How should shader names be derived — from the DSL `effect` name or the file name?
-  - *Assumption*: Use the DSL `effect` name (already required in every shader), but fall back to file name stem if needed.
+  - ✅ **Decided**: Use the file name (e.g., `aurora-ribbons-classic.dsl` → `aurora-ribbons-classic`). Simple, predictable, no parsing needed.
 - **Q3**: Should subfolders map to a virtual directory structure (e.g., `/native/gradients/aurora`)?
-  - *Assumption*: Yes — the relative folder path from the shader root becomes the virtual directory prefix. This maps naturally to the telnet `cd`/`ls` commands later.
+  - ✅ **Decided**: Yes — the relative folder path from the shader root becomes the virtual directory prefix. This maps naturally to the telnet `cd`/`ls` commands later.
 - **Q4**: Flash size concern — 12 shaders at ~2-5 KB each is ~30-60 KB. With the current 1 MB OTA partition, there's ~170 KB headroom. Is that enough?
-  - *Assumption*: Yes for now. If we add many more shaders we may need to revisit partition sizes.
+  - ✅ **Decided**: Yes, ~60 KB is fine. Even 30+ shaders fit comfortably.
 
 ### Verification Goals
 
@@ -119,17 +119,17 @@ Run a telnet server on the ESP32 (on a separate port) that provides a shell-like
 ### Choices to Make
 
 - **Q5**: What port for the telnet server?
-  - *Assumption*: Port 23 (standard telnet). Configurable via `menuconfig` or `#define`.
+  - ✅ **Decided**: Port 23 (standard telnet). Configurable via `menuconfig` or `#define`.
 - **Q6**: Single client or multiple simultaneous clients?
-  - *Assumption*: Single client. The ESP32 has limited RAM, and this is for personal use.
+  - ✅ **Decided**: Single client. The ESP32 has limited RAM, and this is for personal use.
 - **Q7**: Should the telnet server run on its own FreeRTOS task, or share with the TCP server?
-  - *Assumption*: Own task (low priority, small stack ~4 KB). It must not interfere with the shader renderer on core 1.
+  - ✅ **Decided**: Own task (low priority, small stack ~4 KB). It must not interfere with the shader renderer on core 1.
 - **Q8**: How much RAM does the telnet server need?
-  - *Assumption*: ~4-6 KB stack + ~1 KB line buffer. Negligible compared to the 64 KB bytecode blob.
+  - ✅ **Decided**: ~4-6 KB stack + ~1 KB line buffer (~5 KB total). Negligible compared to the 64 KB bytecode blob.
 - **Q9**: Should `top` be a one-shot print or a live-updating display (like Unix `top`)?
-  - *Assumption*: Start with one-shot. Live updating is nice but adds complexity (ANSI cursor control, periodic refresh, Ctrl+C to exit).
+  - ✅ **Decided**: One-shot. Live updating can be added later as an enhancement.
 - **Q10**: Tab completion requires character-mode telnet (not line-mode). Is this acceptable?
-  - *Assumption*: Yes. We negotiate character mode (WILL ECHO, WILL SUPPRESS-GO-AHEAD) during telnet handshake. Most telnet clients (Termius, PuTTY, etc.) support this.
+  - ✅ **Decided**: Yes. We negotiate character mode (WILL ECHO, WILL SUPPRESS-GO-AHEAD) during telnet handshake.
 
 ### Verification Goals
 
@@ -176,11 +176,11 @@ When the configured WiFi network is not available, the ESP32 creates its own pas
 ### Choices to Make
 
 - **Q11**: Should the AP always be active, or only when STA connection fails?
-  - *Assumption*: Always active (APSTA mode). Simpler, and the overhead is negligible. This way you can always connect from your phone even when the home network is up.
+  - ✅ **Decided**: Always active (APSTA mode). Simpler, and the overhead is negligible.
 - **Q12**: What should the default AP password be?
-  - *Assumption*: Configurable via `menuconfig`. A reasonable default like `ledpillar` or empty string for open network. Open network is simpler for personal use but less secure.
+  - ✅ **Decided**: Use a password (e.g., `ledpillar`). Configurable via `menuconfig`.
 - **Q13**: Should we assign a static IP on the AP interface?
-  - *Assumption*: Yes, use the default ESP32 AP IP `192.168.4.1`. The phone will get an IP in the `192.168.4.x` range from the built-in DHCP server.
+  - ✅ **Decided**: Yes, use the default ESP32 AP IP `192.168.4.1`.
 
 ### Verification Goals
 
@@ -271,17 +271,17 @@ Extend the DSL language to generate audio waveforms alongside visuals. The ESP32
 ### Choices to Make
 
 - **Q14**: Sample rate for built-in DAC: 22050 Hz or 44100 Hz?
-  - *Assumption*: Start with 22050 Hz. The 8-bit DAC doesn't benefit much from higher rates, and lower rate means fewer samples to compute per frame (~551 samples/frame at 40 FPS vs. ~1102).
+  - ✅ **Decided**: 22050 Hz. Lower CPU cost (~551 samples/frame at 40 FPS), sufficient for 8-bit DAC.
 - **Q15**: Should the audio DSL block be in the same `.dsl` file as visuals, or a separate file?
-  - *Assumption*: Same file. The audio should react to the same time/seed/params as the visuals for synchronized audiovisual effects.
+  - ✅ **Decided**: Same file. Audio reacts to the same time/seed/params for synchronized audiovisual effects.
 - **Q16**: Should audio play continuously or only when a shader with an `audio` block is active?
-  - *Assumption*: Only when a shader with an `audio` block is active. Silent shaders produce no audio (DAC idle).
+  - ✅ **Decided**: Only when a shader with an `audio` block is active. DAC idle otherwise.
 - **Q17**: The shader renderer runs on core 1. Should audio sample generation happen on core 0 or core 1?
-  - *Assumption*: Core 1 alongside rendering, at the end of each frame. At 22050 Hz / 40 FPS = ~551 samples per frame. With simple sine/math ops this should take <0.5 ms.
+  - ✅ **Decided**: Core 1 alongside rendering, at the end of each frame. ~551 samples should take <0.5 ms.
 - **Q18**: Should we add dithering to the 8-bit output to reduce quantization noise?
-  - *Assumption*: Yes, a simple triangular dither (1 random add before truncation) is nearly free and noticeably improves quality.
+  - ✅ **Decided**: Yes, triangular dither. Nearly free, noticeably improves quality.
 - **Q19**: Which GPIO for DAC output? GPIO25 (DAC1) or GPIO26 (DAC2)?
-  - *Assumption*: GPIO25 (DAC1). Verify it's not already in use by the LED RMT output.
+  - ✅ **Decided**: GPIO25 (DAC1).
 
 ### Verification Goals
 
@@ -428,27 +428,7 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 
 ## Open Questions Summary
 
-| # | Question | Context |
-|---|----------|---------|
-| Q1 | Zig build step vs. separate script for shader compilation? | Multiple Shaders |
-| Q2 | Shader name from DSL `effect` name or file name? | Multiple Shaders |
-| Q3 | Map subfolder structure to virtual directories? | Multiple Shaders |
-| Q4 | Flash budget for ~12+ compiled shaders (~60 KB)? | Multiple Shaders |
-| Q5 | Telnet port number (23 vs. custom)? | Telnet |
-| Q6 | Single or multiple telnet clients? | Telnet |
-| Q7 | Dedicated FreeRTOS task for telnet? | Telnet |
-| Q8 | RAM budget for telnet (~5 KB)? | Telnet |
-| Q9 | `top` one-shot or live-updating? | Telnet |
-| Q10 | Tab completion: character-mode telnet acceptable? | Telnet |
-| Q11 | AP always on (APSTA) or only on STA failure? | WiFi AP |
-| Q12 | Default AP password? | WiFi AP |
-| Q13 | Static IP on AP interface? | WiFi AP |
-| Q14 | Audio sample rate (22050 Hz vs. 44100 Hz)? | Sound |
-| Q15 | Audio in same DSL file as visuals? | Sound |
-| Q16 | Audio only when shader has `audio` block? | Sound |
-| Q17 | Audio eval on core 0 or core 1? | Sound |
-| Q18 | Add dithering for 8-bit quantization? | Sound |
-| Q19 | Which GPIO for DAC output (GPIO25 vs. GPIO26)? | Sound |
+All questions have been decided. See each feature section above for the ✅ **Decided** answers.
 
 > On-Device DSL Compiler questions moved to [ON_DEVICE_DSL_COMPILER.md](ON_DEVICE_DSL_COMPILER.md)
 
