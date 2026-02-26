@@ -193,33 +193,32 @@ When the configured WiFi network is not available, the ESP32 creates its own pas
 
 ---
 
-## Feature 4: Sound / Audio Synthesis via Bluetooth
+## Feature 4: Sound / Audio Synthesis
 
 ### Description
 
-Extend the DSL language to generate audio waveforms alongside visuals. The ESP32 connects to the Dayton Audio amplifier board via Bluetooth A2DP (source mode) and streams synthesized mono audio.
+Extend the DSL language to generate audio waveforms alongside visuals. The ESP32 outputs synthesized mono audio through its built-in 8-bit DAC (GPIO25), connected to the Dayton Audio amplifier's AUX input. This approach requires no extra hardware, no Bluetooth stack, and has negligible flash/RAM cost.
 
-### Difficulty: **Hard**
+### Difficulty: **Medium**
 
 ### What Needs to Be Done
 
-#### Phase 1: Bluetooth A2DP Audio Output
+#### Phase 1: Built-in DAC Audio Output (8-bit, GPIO25)
 
-1. **Enable Bluetooth**: Set `CONFIG_BT_ENABLED=y`, enable Classic BT + A2DP profile in `sdkconfig`
-   - ⚠️ **Flash impact**: +350-500 KB for `libbt.a`. Current firmware is ~823 KB in a ~1 MB partition. **This will NOT fit with OTA.**
-   - **Mitigation**: Switch to a single-factory partition (no OTA) giving ~3.5 MB, or use a larger flash chip
-   - ⚠️ **RAM impact**: +50-100 KB heap. Current free heap is ~197 KB. Tight but possible if we reduce the bytecode blob buffer from 64 KB to 32 KB.
+1. **I2S DAC driver**: Configure the ESP32's I2S peripheral in built-in DAC mode:
+   - Output on GPIO25 (DAC channel 1), mono
+   - Sample rate: configurable, start with 22050 Hz (8-bit DAC doesn't benefit much from 44.1 kHz)
+   - Use DMA double-buffering so audio output is continuous without CPU stalls
+   - ⚠️ **Flash impact**: Negligible (I2S driver is already in ESP-IDF)
+   - ⚠️ **RAM impact**: ~2-4 KB for DMA buffers
+   - **Hardware**: Single wire from GPIO25 to the amplifier's AUX input (+ common ground)
 
-2. **A2DP source task**: New FreeRTOS task that:
-   - Scans for and connects to the Dayton Audio amplifier by name
-   - Provides PCM audio samples via callback (`app_a2d_source_data_cb`)
-   - Handles reconnection if Bluetooth link drops
-   - Audio format: 44100 Hz, 16-bit, mono (downmixed from stereo A2DP requirement)
+2. **Audio buffer**: Ring buffer between the shader renderer and I2S DMA:
+   - Shader renderer fills it with 8-bit unsigned PCM samples each frame
+   - I2S DMA callback drains it
+   - Size: ~1-2 KB (enough for ~45-90 ms at 22050 Hz mono 8-bit)
 
-3. **Audio buffer**: Ring buffer between the shader renderer and A2DP callback:
-   - Shader renderer fills it with PCM samples each frame
-   - A2DP callback drains it
-   - Size: ~4 KB (enough for ~23ms at 44.1 kHz mono 16-bit)
+3. **Audio task**: Either feed from the shader task on core 1 (after each frame) or use the I2S DMA write-blocking pattern. The I2S driver handles timing — we just need to keep the buffer fed.
 
 #### Phase 2: DSL Sound Extension
 
@@ -234,61 +233,68 @@ Extend the DSL language to generate audio waveforms alongside visuals. The ESP32
    emit
    
    audio {
-     // mono output sample in [-1, 1]
+     // mono output sample in [-1, 1], will be quantized to 8-bit unsigned
      let freq = 440.0 + sin(time * 2.0) * 100.0
      let envelope = clamp(1.0 - fract(time * 4.0) * 2.0, 0.0, 1.0)
      out sin(time * freq * TAU) * envelope * 0.5
    }
    ```
 
-5. **Audio evaluation**: The audio block runs at audio sample rate (44100 Hz), not the pixel rate. It receives the same `time` and `seed` inputs, plus an `audio_phase` accumulator for continuous oscillator phase.
+5. **Audio evaluation**: The audio block runs at the audio sample rate (22050 Hz), not the pixel rate. It receives the same `time` and `seed` inputs, plus an `audio_phase` accumulator for continuous oscillator phase.
 
-6. **ADSR envelopes**: Add builtin functions:
+6. **8-bit quantization**: Map the DSL output range [-1, 1] → unsigned 8-bit [0, 255]. The 8-bit limitation means ~48 dB dynamic range — embrace it as a lo-fi aesthetic. Dithering (adding tiny noise before quantization) can reduce audible stepping artifacts cheaply.
+
+7. **ADSR envelopes**: Add builtin functions:
    - `adsr(attack, decay, sustain, release, trigger)` → envelope value [0, 1]
    - Or build from existing `clamp`/`smoothstep` functions
 
-7. **C emitter update**: Emit a second function `dsl_shader_eval_audio(float time, float seed, float *out_sample)` alongside the pixel shader
+8. **C emitter update**: Emit a second function `dsl_shader_eval_audio(float time, float seed, float *out_sample)` alongside the pixel shader
 
-8. **Bytecode VM update**: Add audio evaluation path to the VM
+9. **Bytecode VM update**: Add audio evaluation path to the VM
 
 #### Phase 3: Integration
 
-9. **Sync**: Audio and video must stay in sync. The shader task generates both pixel frames and audio sample buffers on the same timeline.
+10. **Sync**: Audio and video must stay in sync. The shader task generates both pixel frames and audio sample buffers on the same timeline.
 
-10. **Telnet integration**: `top` command shows audio status (BT connected, buffer level, audio FPS)
+11. **Telnet integration**: `top` command shows audio status (DAC active, buffer level)
+
+#### Phase 4: Higher Quality (Future)
+
+12. **I2S external DAC upgrade**: If the 8-bit quality is too limiting, add a small I2S DAC breakout (e.g., PCM5102, MAX98357A, ~$2) for 16-bit output. The software architecture (ring buffer, DSL audio block, I2S driver) stays the same — only the I2S config and sample format change.
+
+13. **Bluetooth A2DP (optional)**: If wireless audio to the Dayton amplifier is desired later:
+    - ⚠️ **Flash impact**: +350-500 KB for `libbt.a`. Current firmware is ~823 KB in a ~1 MB partition. **Will NOT fit with OTA.**
+    - **Mitigation**: Switch to single-factory partition (no OTA) or larger flash chip
+    - ⚠️ **RAM impact**: +50-100 KB heap
+    - Audio format: 44100 Hz, 16-bit stereo (A2DP/SBC requirement)
 
 ### Choices to Make
 
-- **Q14**: Bluetooth A2DP adds ~350-500 KB flash. With OTA, the ~1 MB partition cannot hold both. Options:
-  - a) Drop OTA entirely (factory partition only, ~3.5 MB available)
-  - b) Keep OTA but increase flash to 8 or 16 MB (hardware change)
-  - c) Build separate firmware variants (with/without audio)
-  - *This is a critical decision — please advise.*
-- **Q15**: Should audio synthesis run at full 44.1 kHz, or at a lower rate (e.g., 22.05 kHz) for less CPU load?
-  - *Assumption*: 44.1 kHz for quality. SBC codec in A2DP expects 44.1 kHz anyway.
-- **Q16**: Should the audio DSL block be in the same `.dsl` file as visuals, or a separate file?
+- **Q14**: Sample rate for built-in DAC: 22050 Hz or 44100 Hz?
+  - *Assumption*: Start with 22050 Hz. The 8-bit DAC doesn't benefit much from higher rates, and lower rate means fewer samples to compute per frame (~551 samples/frame at 40 FPS vs. ~1102).
+- **Q15**: Should the audio DSL block be in the same `.dsl` file as visuals, or a separate file?
   - *Assumption*: Same file. The audio should react to the same time/seed/params as the visuals for synchronized audiovisual effects.
-- **Q17**: What is the Dayton Audio amplifier's Bluetooth device name? We need it for auto-connection.
-  - *Needed from user.*
-- **Q18**: Should audio play continuously or only when a shader with an `audio` block is active?
-  - *Assumption*: Only when a shader with an `audio` block is active. Silent shaders produce no audio.
-- **Q19**: The shader renderer runs on core 1. Audio sample generation should be lightweight. Should audio eval happen on core 0 (alongside networking) or core 1 (alongside rendering)?
-  - *Assumption*: Core 1 alongside rendering, at the end of each frame. At 44.1 kHz / 40 FPS = 1102 samples per frame. With simple sine/math ops this should take <1 ms.
-- **Q20**: Can the ESP32 handle Bluetooth + WiFi simultaneously?
-  - Yes, but they share the 2.4 GHz radio via time-division. This can introduce latency jitter on both WiFi and BT. We need to test if 40 FPS rendering + BT audio streaming is achievable.
+- **Q16**: Should audio play continuously or only when a shader with an `audio` block is active?
+  - *Assumption*: Only when a shader with an `audio` block is active. Silent shaders produce no audio (DAC idle).
+- **Q17**: The shader renderer runs on core 1. Should audio sample generation happen on core 0 or core 1?
+  - *Assumption*: Core 1 alongside rendering, at the end of each frame. At 22050 Hz / 40 FPS = ~551 samples per frame. With simple sine/math ops this should take <0.5 ms.
+- **Q18**: Should we add dithering to the 8-bit output to reduce quantization noise?
+  - *Assumption*: Yes, a simple triangular dither (1 random add before truncation) is nearly free and noticeably improves quality.
+- **Q19**: Which GPIO for DAC output? GPIO25 (DAC1) or GPIO26 (DAC2)?
+  - *Assumption*: GPIO25 (DAC1). Verify it's not already in use by the LED RMT output.
 
 ### Verification Goals
 
-1. ✅ ESP32 discovers and connects to the Dayton Audio amplifier via Bluetooth
-2. ✅ A simple test tone (440 Hz sine) plays through the speaker
-3. ✅ A DSL shader with an `audio` block produces synchronized sound and visuals
-4. ✅ Audio quality is acceptable (no major clicks, pops, or dropouts under normal conditions)
-5. ✅ Shader rendering stays at 40 FPS while audio is playing
-6. ✅ `stop` command stops both audio and visuals
-7. ✅ Shaders without an `audio` block produce no audio (silence / BT idle)
-8. ✅ `top` shows audio buffer status
-9. ✅ WiFi + Bluetooth coexist (telnet still works while audio plays)
-10. ✅ Audio phase is continuous across frames (no clicks at frame boundaries)
+1. ✅ A simple test tone (440 Hz sine) plays through the speaker via GPIO25 → AUX input
+2. ✅ A DSL shader with an `audio` block produces synchronized sound and visuals
+3. ✅ Audio quality is acceptable for synthesized tones/effects (no major clicks or dropouts)
+4. ✅ Shader rendering stays at 40 FPS while audio is playing
+5. ✅ `stop` command stops both audio and visuals
+6. ✅ Shaders without an `audio` block produce no audio (DAC idle)
+7. ✅ `top` shows audio buffer status
+8. ✅ Audio phase is continuous across frames (no clicks at frame boundaries)
+9. ✅ 8-bit lo-fi character is audible but not unpleasant for synth sounds
+10. ✅ WiFi and telnet still work while audio plays (no resource conflict)
 
 ---
 
@@ -324,11 +330,11 @@ Run a DSL-to-bytecode compiler on the ESP32 itself, so users can paste a DSL scr
 
 ### Choices to Make
 
-- **Q21**: Is the effort of porting ~2000+ lines of Zig parser+compiler to C worthwhile?
+- **Q20**: Is the effort of porting ~2000+ lines of Zig parser+compiler to C worthwhile?
   - *Alternative*: Instead of porting, we could have the phone send the DSL source to the ESP32, which forwards it to a PC for compilation, then receives the bytecode back. But this defeats the "no PC" goal.
   - *Alternative*: Write a minimal "DSL-lite" parser in C that supports a subset of the language.
   - *Assumption*: If implemented, do a faithful port of the full parser.
-- **Q22**: Should compiled bytecode be persistable (saved to NVS like the default shader hook)?
+- **Q21**: Should compiled bytecode be persistable (saved to NVS like the default shader hook)?
   - *Assumption*: Yes, so you can set a telnet-compiled shader as the default.
 
 ### Verification Goals
@@ -454,7 +460,7 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 
 3. **Telnet Server** depends on having multiple shaders to browse. Combined with WiFi AP, this gives you full phone-based control.
 
-4. **Sound** is the most resource-intensive feature and has the most unknowns (Bluetooth + WiFi coexistence, flash budget, audio quality). Doing it last means the core system is stable and well-tested before adding complexity. It also requires a critical decision about OTA vs. flash capacity.
+4. **Sound** uses the built-in 8-bit DAC (GPIO25) — negligible flash/RAM cost, no Bluetooth complexity. The main unknown is whether 8-bit quality is sufficient; a future upgrade path to an external I2S DAC or Bluetooth A2DP is documented.
 
 5. **On-Device Compiler** is a stretch goal. It's substantial effort (~4000 lines of C) for a "fun to have" feature. Implement only if the other features are stable and there's appetite for it.
 
@@ -467,7 +473,7 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 | 1 | Multiple Native Shaders | Medium | ~8-10 | Build pipeline complexity |
 | 2 | WiFi AP Fallback | Easy | ~2-3 | None significant |
 | 3 | Telnet Server | Medium-Hard | ~5-8 (new module) | RAM budget, mutex design |
-| 4 | Sound / Audio | Hard | ~10-15 (new modules) | Flash/RAM budget, BT+WiFi coex |
+| 4 | Sound / Audio (8-bit DAC) | Medium | ~6-8 (new module + DSL ext.) | 8-bit quality, GPIO conflict check |
 | 5 | On-Device DSL Compiler | Hard | ~3-5 (new C modules) | Effort vs. value, RAM for parsing |
 | 6 | Remove Pre-DSL Zig Effects | Easy | ~3 (delete/trim) | Verify no shared utilities lost |
 
@@ -490,21 +496,22 @@ Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL
 | Q11 | AP always on (APSTA) or only on STA failure? | WiFi AP |
 | Q12 | Default AP password? | WiFi AP |
 | Q13 | Static IP on AP interface? | WiFi AP |
-| Q14 | **CRITICAL**: Drop OTA to fit Bluetooth, or other strategy? | Sound |
-| Q15 | Audio sample rate (44.1 kHz vs. lower)? | Sound |
-| Q16 | Audio in same DSL file as visuals? | Sound |
-| Q17 | Dayton Audio amplifier Bluetooth device name? | Sound |
-| Q18 | Audio only when shader has `audio` block? | Sound |
-| Q19 | Audio eval on core 0 or core 1? | Sound |
-| Q20 | BT + WiFi coexistence impact on 40 FPS? | Sound |
-| Q21 | Port full parser to C or use DSL-lite subset? | On-Device Compiler |
-| Q22 | Persist telnet-compiled bytecode to NVS? | On-Device Compiler |
+| Q14 | Audio sample rate (22050 Hz vs. 44100 Hz)? | Sound |
+| Q15 | Audio in same DSL file as visuals? | Sound |
+| Q16 | Audio only when shader has `audio` block? | Sound |
+| Q17 | Audio eval on core 0 or core 1? | Sound |
+| Q18 | Add dithering for 8-bit quantization? | Sound |
+| Q19 | Which GPIO for DAC output (GPIO25 vs. GPIO26)? | Sound |
+| Q20 | Port full parser to C or use DSL-lite subset? | On-Device Compiler |
+| Q21 | Persist telnet-compiled bytecode to NVS? | On-Device Compiler |
 
 ---
 
 ## Assumptions
 
-- The Dayton Audio amplifier supports Bluetooth Classic (A2DP sink profile)
+- Audio output starts with the built-in 8-bit DAC on GPIO25, wired to the amplifier's AUX input
+- The Dayton Audio amplifier board has an AUX/line-in that can accept the ESP32 DAC output level
+- 8-bit audio quality is acceptable for synthesized tones/effects (lo-fi aesthetic); upgrade path to I2S DAC or Bluetooth A2DP is documented
 - The ESP32 has enough CPU headroom on core 1 for audio sample generation alongside 40 FPS rendering
 - Single telnet user is sufficient (personal use device)
 - WiFi AP overhead is negligible for shader performance
