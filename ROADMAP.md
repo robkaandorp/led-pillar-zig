@@ -342,6 +342,50 @@ Run a DSL-to-bytecode compiler on the ESP32 itself, so users can paste a DSL scr
 
 ---
 
+## Feature 6: Remove Pre-DSL Zig Effect Code
+
+### Description
+
+Remove the legacy hand-coded Zig shader/effect implementations that predate the DSL system. These effects are now superseded by DSL shaders which can target both native C and bytecode paths. Removing the old code simplifies the codebase and reduces binary size.
+
+### Difficulty: **Easy**
+
+### What Needs to Be Removed
+
+1. **`src/effects.zig`** — Contains 8 legacy effects (~1500 lines):
+   - `runPixelHealthSequence` / `runPixelHealthEffect` / `runPixelHealthPhases` (pixel health test)
+   - `runRunningDotEffect` / `runRunningPixelLoop` / `drawRunningPixelFrame` (running pixel)
+   - `runInfiniteLineEffect` / `drawInfiniteWrappedLineFrame` (single rotating line)
+   - `runInfiniteLinesEffect` / `shadeInfiniteLinesPixel` (multiple rotating lines)
+   - `runSoapBubblesEffect` / `updateSoapBubbles` / `renderSoapBubblesFrame` (soap bubbles)
+   - `runCampfireEffect` / `updateCampfireTongues` / `renderCampfireFrame` (campfire)
+   - `runAuroraRibbonsEffect` / `renderAuroraRibbonsFrame` (aurora ribbons)
+   - `runRainRippleEffect` / `updateRainSystem` / `renderRainRippleFrame` (rain ripple)
+   - All associated config structs, state structs, and helper functions
+
+2. **`src/main.zig`** — Remove the CLI command paths and switch cases that invoke the old effects (lines ~128-176)
+
+3. **`src/root.zig`** — Remove the re-export of `effects` if it becomes empty or is deleted
+
+4. **Tests** — Remove or update any tests specific to the old effects
+
+### What to Keep
+
+- The DSL runtime, parser, compiler, and C emitter (these are the replacement)
+- Any shared utility functions from `effects.zig` that the DSL runtime or other modules still use (verify before deleting)
+- The `display_logic.zig` coordinate mapping — this is used by everything
+
+### Verification Goals
+
+1. ✅ `src/effects.zig` is deleted or contains only shared utilities (if any)
+2. ✅ Old effect CLI commands (pixel-health, running-dot, etc.) are removed from `src/main.zig`
+3. ✅ `zig build test` passes with all remaining tests
+4. ✅ `zig build` produces a smaller binary
+5. ✅ DSL-based effects (`dsl-file`, `bytecode-upload`, `native-shader-activate`) still work
+6. ✅ Simulator still works with DSL shaders
+
+---
+
 ## Recommended Implementation Order
 
 ```
@@ -367,10 +411,39 @@ Run a DSL-to-bytecode compiler on the ESP32 itself, so users can paste a DSL scr
           │    Diff: Hard    │   │    Diff: Hard (stretch)│
           └──────────────────┘   └────────────────────────┘
 ```
+┌─────────────────────────────────────┐
+│  0. Remove Pre-DSL Zig Effects      │ ← Cleanup: simplify codebase first
+│     Difficulty: Easy                │
+└──────────────┬──────────────────────┘
+               │
+┌──────────────┴──────────────────────┐
+│  1. Multiple Native Shaders         │ ← Foundation: shader registry,
+│     Difficulty: Medium              │   build pipeline, protocol ext.
+└──────────────┬──────────────────────┘
+               │
+    ┌──────────┴──────────┐
+    │                     │
+    ▼                     ▼
+┌──────────────────┐ ┌───────────────────────┐
+│ 2. WiFi AP       │ │ 3. Telnet Server      │ ← Depends on shader registry
+│    Fallback      │ │    Difficulty: Med-Hard│   for ls/cd/run commands
+│    Diff: Easy    │ └───────────┬───────────┘
+└──────────────────┘             │
+                                 │
+                    ┌────────────┴────────────┐
+                    │                         │
+                    ▼                         ▼
+          ┌──────────────────┐   ┌────────────────────────┐
+          │ 4. Sound / Audio │   │ 5. On-Device Compiler  │
+          │    Diff: Hard    │   │    Diff: Hard (stretch)│
+          └──────────────────┘   └────────────────────────┘
+```
 
 ### Rationale
 
-1. **Multiple Native Shaders first** — This is the foundation. The telnet server's `ls`/`cd`/`run` commands all depend on having a shader registry. It also establishes the build pipeline for managing many shaders.
+0. **Remove Pre-DSL Zig Effects first** — Quick cleanup that reduces code complexity and binary size before building new features on top. The old effects in `src/effects.zig` (~1500 lines, 8 hand-coded shaders) are fully superseded by DSL shaders.
+
+1. **Multiple Native Shaders** — This is the foundation. The telnet server's `ls`/`cd`/`run` commands all depend on having a shader registry. It also establishes the build pipeline for managing many shaders.
 
 2. **WiFi AP Fallback** can be done at any point (no dependencies), but doing it early means you can test the telnet server from your phone right away. It's easy and quick.
 
@@ -391,6 +464,7 @@ Run a DSL-to-bytecode compiler on the ESP32 itself, so users can paste a DSL scr
 | 3 | Telnet Server | Medium-Hard | ~5-8 (new module) | RAM budget, mutex design |
 | 4 | Sound / Audio | Hard | ~10-15 (new modules) | Flash/RAM budget, BT+WiFi coex |
 | 5 | On-Device DSL Compiler | Hard | ~3-5 (new C modules) | Effort vs. value, RAM for parsing |
+| 6 | Remove Pre-DSL Zig Effects | Easy | ~3 (delete/trim) | Verify no shared utilities lost |
 
 ---
 
