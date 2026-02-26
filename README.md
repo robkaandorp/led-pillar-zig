@@ -54,16 +54,7 @@ https://github.com/robkaandorp/tcp_led_stream
 - Run sender with selectable effect: `zig build run -- <host> [port] [frame_rate_hz] [effect] [effect_args...]`
 - Compile DSL only (no server connection): `zig build run -- dsl-compile <path-to-effect.dsl>`
 - Effects:
-  - `demo` (default): pixel health test, then running dot
-  - `health-test [hold_seconds]`
-  - `running-dot`
-  - `soap-bubbles`: drifting bubble-like particles
-  - `campfire`: warm, flickering ember glow
-  - `aurora-ribbons`: smooth flowing aurora bands
-  - `rain-ripple`: raindrop ripples across the display
-  - `infinite-line [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
-  - `infinite-lines [line_count] [rotation_period_seconds] [color_transition_seconds] [line_width_pixels]`
-  - `dsl-file <path-to-effect.dsl>` (also writes compiled reference bytecode to `bytecode/<dsl-name>.bin`)
+  - `dsl-file <path-to-effect.dsl>` (default; also writes compiled reference bytecode to `bytecode/<dsl-name>.bin`)
   - `dsl-compile <path-to-effect.dsl>` (compile-only mode; writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits native shader C to `esp32_firmware/main/generated/dsl_shader_generated.c` without opening TCP)
   - `bytecode-upload <path-to-bytecode.bin|path-to-effect.dsl>` (protocol v3 bytecode upload + activate; `.dsl` is compiled first, then monitors shader FPS + slow frames until you press Enter)
   - `native-shader-activate` (protocol v3 command to activate built-in firmware native C shader; monitors shader FPS + slow frames until you press Enter)
@@ -80,7 +71,7 @@ https://github.com/robkaandorp/tcp_led_stream
 - DSL feasibility research and example syntax: `DSL_FEASIBILITY_FINDINGS.md`
 - DSL v1 parser language spec: `DSL_V1_LANGUAGE.md`
 - DSL v1 example files: `examples\dsl\v1\`
-  - Includes `soap-bubbles.dsl` with upward bubble cycles and burst-ring timing.
+  - Includes shaders like `soap-bubbles.dsl`, `infinite-lines.dsl`, `chaos-nebula.dsl`, and more.
   - DSL supports optional `frame` blocks plus `for`/`if` control flow in effect blocks.
 
 ## Development principles

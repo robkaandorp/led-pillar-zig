@@ -1,7 +1,6 @@
 const std = @import("std");
 const display_logic = @import("display_logic.zig");
 const dsl_parser = @import("dsl_parser.zig");
-const effects = @import("effects.zig");
 const sdf_common = @import("sdf_common.zig");
 
 pub const PixelInputs = struct {
@@ -279,7 +278,7 @@ pub const Evaluator = struct {
     pub fn renderFrame(
         self: *Evaluator,
         display: *const display_logic.DisplayBuffer,
-        frame: []effects.Color,
+        frame: []display_logic.Color,
         frame_number: u64,
         frame_rate_hz: f32,
     ) !void {
@@ -1289,11 +1288,11 @@ test "renderFrame evaluates params and layers per pixel" {
     });
     defer display.deinit();
 
-    var frame_storage = [_]effects.Color{.{}} ** 4;
+    var frame_storage = [_]display_logic.Color{.{}} ** 4;
     try evaluator.renderFrame(&display, frame_storage[0..], 0, 40.0);
 
-    try std.testing.expectEqual(effects.Color{ .r = 64, .g = 64, .b = 0, .w = 0 }, frame_storage[0]);
-    try std.testing.expectEqual(effects.Color{ .r = 191, .g = 64, .b = 0, .w = 0 }, frame_storage[1]);
-    try std.testing.expectEqual(effects.Color{ .r = 64, .g = 191, .b = 0, .w = 0 }, frame_storage[2]);
-    try std.testing.expectEqual(effects.Color{ .r = 191, .g = 191, .b = 0, .w = 0 }, frame_storage[3]);
+    try std.testing.expectEqual(display_logic.Color{ .r = 64, .g = 64, .b = 0, .w = 0 }, frame_storage[0]);
+    try std.testing.expectEqual(display_logic.Color{ .r = 191, .g = 64, .b = 0, .w = 0 }, frame_storage[1]);
+    try std.testing.expectEqual(display_logic.Color{ .r = 64, .g = 191, .b = 0, .w = 0 }, frame_storage[2]);
+    try std.testing.expectEqual(display_logic.Color{ .r = 191, .g = 191, .b = 0, .w = 0 }, frame_storage[3]);
 }

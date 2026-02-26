@@ -1,6 +1,15 @@
 const std = @import("std");
 const tcp_client = @import("tcp_client.zig");
 
+pub const Color = struct {
+    r: u8 = 0,
+    g: u8 = 0,
+    b: u8 = 0,
+    w: u8 = 0,
+};
+
+pub const StopFlag = std.atomic.Value(bool);
+
 pub const Config = struct {
     width: u16 = tcp_client.default_display_width,
     height: u16 = tcp_client.default_display_height,
@@ -79,6 +88,67 @@ pub const DisplayBuffer = struct {
     }
 };
 
+pub fn fillSolid(display: *DisplayBuffer, color: Color) void {
+    var encoded: [4]u8 = undefined;
+    const pixel = encodeColor(display.pixel_format, color, &encoded);
+
+    var offset: usize = 0;
+    while (offset < display.buffer.len) : (offset += display.bytes_per_pixel) {
+        @memcpy(display.buffer[offset .. offset + display.bytes_per_pixel], pixel);
+    }
+}
+
+pub fn encodeColor(format: tcp_client.PixelFormat, color: Color, output: *[4]u8) []const u8 {
+    return switch (format) {
+        .rgb => blk: {
+            output[0] = color.r;
+            output[1] = color.g;
+            output[2] = color.b;
+            break :blk output[0..3];
+        },
+        .grb => blk: {
+            output[0] = color.g;
+            output[1] = color.r;
+            output[2] = color.b;
+            break :blk output[0..3];
+        },
+        .bgr => blk: {
+            output[0] = color.b;
+            output[1] = color.g;
+            output[2] = color.r;
+            break :blk output[0..3];
+        },
+        .rgbw => blk: {
+            if (color.w != 0) {
+                output[0] = 0;
+                output[1] = 0;
+                output[2] = 0;
+                output[3] = color.w;
+            } else {
+                output[0] = color.r;
+                output[1] = color.g;
+                output[2] = color.b;
+                output[3] = 0;
+            }
+            break :blk output[0..4];
+        },
+        .grbw => blk: {
+            if (color.w != 0) {
+                output[0] = 0;
+                output[1] = 0;
+                output[2] = 0;
+                output[3] = color.w;
+            } else {
+                output[0] = color.g;
+                output[1] = color.r;
+                output[2] = color.b;
+                output[3] = 0;
+            }
+            break :blk output[0..4];
+        },
+    };
+}
+
 test "serpentine physicalPixelIndex maps even and odd columns" {
     var display = try DisplayBuffer.init(std.testing.allocator, .{
         .width = 3,
@@ -121,6 +191,32 @@ test "setPixel writes data at serpentine offset" {
     const offset = try display.pixelOffset(1, 0);
     try std.testing.expectEqual(@as(usize, 9), offset);
     try std.testing.expectEqualSlices(u8, pixel[0..], display.payload()[offset .. offset + 3]);
+}
+
+test "fillSolid encodes RGB pixel order correctly" {
+    var display = try DisplayBuffer.init(std.testing.allocator, .{
+        .width = 1,
+        .height = 2,
+        .pixel_format = .rgb,
+    });
+    defer display.deinit();
+    fillSolid(&display, .{ .r = 10, .g = 20, .b = 30 });
+    try std.testing.expectEqual(@as(u8, 10), display.buffer[0]);
+    try std.testing.expectEqual(@as(u8, 20), display.buffer[1]);
+    try std.testing.expectEqual(@as(u8, 30), display.buffer[2]);
+}
+
+test "fillSolid encodes GRB pixel order correctly" {
+    var display = try DisplayBuffer.init(std.testing.allocator, .{
+        .width = 1,
+        .height = 2,
+        .pixel_format = .grb,
+    });
+    defer display.deinit();
+    fillSolid(&display, .{ .r = 10, .g = 20, .b = 30 });
+    try std.testing.expectEqual(@as(u8, 20), display.buffer[0]);
+    try std.testing.expectEqual(@as(u8, 10), display.buffer[1]);
+    try std.testing.expectEqual(@as(u8, 30), display.buffer[2]);
 }
 
 test "setPixel validates pixel length" {

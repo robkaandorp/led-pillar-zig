@@ -1,6 +1,5 @@
 pub const tcp_client = @import("tcp_client.zig");
 pub const display_logic = @import("display_logic.zig");
-pub const effects = @import("effects.zig");
 pub const simulator = @import("simulator.zig");
 pub const sdf_common = @import("sdf_common.zig");
 pub const dsl_parser = @import("dsl_parser.zig");
@@ -16,19 +15,10 @@ pub const TcpClient = tcp_client.TcpClient;
 pub const TcpClientConfig = tcp_client.Config;
 pub const DisplayBuffer = display_logic.DisplayBuffer;
 pub const DisplayConfig = display_logic.Config;
-pub const PixelHealthTestConfig = effects.PixelHealthTestConfig;
-pub const RunningDotConfig = effects.RunningDotConfig;
-pub const SoapBubblesConfig = effects.SoapBubblesConfig;
-pub const CampfireConfig = effects.CampfireConfig;
-pub const AuroraRibbonsConfig = effects.AuroraRibbonsConfig;
-pub const RainRippleConfig = effects.RainRippleConfig;
-pub const InfiniteLineConfig = effects.InfiniteLineConfig;
-pub const InfiniteLinesConfig = effects.InfiniteLinesConfig;
 
 test {
     _ = @import("tcp_client.zig");
     _ = @import("display_logic.zig");
-    _ = @import("effects.zig");
     _ = @import("simulator.zig");
     _ = @import("sdf_common.zig");
     _ = @import("dsl_parser.zig");
