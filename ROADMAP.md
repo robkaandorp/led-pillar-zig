@@ -104,9 +104,17 @@ Run a telnet server on the ESP32 (on a separate port) that provides a shell-like
    | `top` | Show running shader stats (name, FPS, frame count, uptime, slow frames) |
    | `help` | List available commands |
 
-4. **Prompt**: Display useful info, e.g., `led-pillar:/native> `
+4. **Tab completion**: The shell must support tab-expansion so the user does not need to type full path or shader names:
+   - Pressing Tab after a partial name completes it if there is a single match
+   - If multiple matches exist, pressing Tab a second time lists all matching options
+   - Works for `cd`, `run`, and any command that takes a path/name argument
+   - Completes both directory names and shader names depending on context
+   - Implementation: buffer keystrokes character-by-character (telnet character mode), detect `\t` (0x09), perform prefix matching against the virtual filesystem entries in the current directory
+   - Send the completed portion back to the client as echoed characters so the input line stays consistent
 
-5. **Shared state**: The telnet commands must interact with the same `fw_tcp_server_state_t` (or a shared shader-control interface) to start/stop shaders. Need careful mutex usage to not block the shader renderer.
+5. **Prompt**: Display useful info, e.g., `led-pillar:/native> `
+
+6. **Shared state**: The telnet commands must interact with the same `fw_tcp_server_state_t` (or a shared shader-control interface) to start/stop shaders. Need careful mutex usage to not block the shader renderer.
 
 ### Choices to Make
 
@@ -120,6 +128,8 @@ Run a telnet server on the ESP32 (on a separate port) that provides a shell-like
   - *Assumption*: ~4-6 KB stack + ~1 KB line buffer. Negligible compared to the 64 KB bytecode blob.
 - **Q9**: Should `top` be a one-shot print or a live-updating display (like Unix `top`)?
   - *Assumption*: Start with one-shot. Live updating is nice but adds complexity (ANSI cursor control, periodic refresh, Ctrl+C to exit).
+- **Q10**: Tab completion requires character-mode telnet (not line-mode). Is this acceptable?
+  - *Assumption*: Yes. We negotiate character mode (WILL ECHO, WILL SUPPRESS-GO-AHEAD) during telnet handshake. Most telnet clients (Termius, PuTTY, etc.) support this.
 
 ### Verification Goals
 
@@ -130,9 +140,11 @@ Run a telnet server on the ESP32 (on a separate port) that provides a shell-like
 5. ✅ `top` shows shader name, FPS, and frame count
 6. ✅ `stop` stops the shader and clears the display
 7. ✅ `cd ..` works, `pwd` shows correct path
-8. ✅ Invalid commands show helpful error messages
-9. ✅ Shader performance (40 FPS) is unaffected while telnet session is active
-10. ✅ Disconnecting telnet does not stop the running shader
+8. ✅ Tab-completing `run aur<Tab>` expands to `run aurora_ribbons_classic_v1`
+9. ✅ Tab on ambiguous prefix shows all matching options
+10. ✅ Invalid commands show helpful error messages
+11. ✅ Shader performance (40 FPS) is unaffected while telnet session is active
+12. ✅ Disconnecting telnet does not stop the running shader
 
 ---
 
@@ -163,11 +175,11 @@ When the configured WiFi network is not available, the ESP32 creates its own pas
 
 ### Choices to Make
 
-- **Q10**: Should the AP always be active, or only when STA connection fails?
+- **Q11**: Should the AP always be active, or only when STA connection fails?
   - *Assumption*: Always active (APSTA mode). Simpler, and the overhead is negligible. This way you can always connect from your phone even when the home network is up.
-- **Q11**: What should the default AP password be?
+- **Q12**: What should the default AP password be?
   - *Assumption*: Configurable via `menuconfig`. A reasonable default like `ledpillar` or empty string for open network. Open network is simpler for personal use but less secure.
-- **Q12**: Should we assign a static IP on the AP interface?
+- **Q13**: Should we assign a static IP on the AP interface?
   - *Assumption*: Yes, use the default ESP32 AP IP `192.168.4.1`. The phone will get an IP in the `192.168.4.x` range from the built-in DHCP server.
 
 ### Verification Goals
@@ -247,22 +259,22 @@ Extend the DSL language to generate audio waveforms alongside visuals. The ESP32
 
 ### Choices to Make
 
-- **Q13**: Bluetooth A2DP adds ~350-500 KB flash. With OTA, the ~1 MB partition cannot hold both. Options:
+- **Q14**: Bluetooth A2DP adds ~350-500 KB flash. With OTA, the ~1 MB partition cannot hold both. Options:
   - a) Drop OTA entirely (factory partition only, ~3.5 MB available)
   - b) Keep OTA but increase flash to 8 or 16 MB (hardware change)
   - c) Build separate firmware variants (with/without audio)
   - *This is a critical decision — please advise.*
-- **Q14**: Should audio synthesis run at full 44.1 kHz, or at a lower rate (e.g., 22.05 kHz) for less CPU load?
+- **Q15**: Should audio synthesis run at full 44.1 kHz, or at a lower rate (e.g., 22.05 kHz) for less CPU load?
   - *Assumption*: 44.1 kHz for quality. SBC codec in A2DP expects 44.1 kHz anyway.
-- **Q15**: Should the audio DSL block be in the same `.dsl` file as visuals, or a separate file?
+- **Q16**: Should the audio DSL block be in the same `.dsl` file as visuals, or a separate file?
   - *Assumption*: Same file. The audio should react to the same time/seed/params as the visuals for synchronized audiovisual effects.
-- **Q16**: What is the Dayton Audio amplifier's Bluetooth device name? We need it for auto-connection.
+- **Q17**: What is the Dayton Audio amplifier's Bluetooth device name? We need it for auto-connection.
   - *Needed from user.*
-- **Q17**: Should audio play continuously or only when a shader with an `audio` block is active?
+- **Q18**: Should audio play continuously or only when a shader with an `audio` block is active?
   - *Assumption*: Only when a shader with an `audio` block is active. Silent shaders produce no audio.
-- **Q18**: The shader renderer runs on core 1. Audio sample generation should be lightweight. Should audio eval happen on core 0 (alongside networking) or core 1 (alongside rendering)?
+- **Q19**: The shader renderer runs on core 1. Audio sample generation should be lightweight. Should audio eval happen on core 0 (alongside networking) or core 1 (alongside rendering)?
   - *Assumption*: Core 1 alongside rendering, at the end of each frame. At 44.1 kHz / 40 FPS = 1102 samples per frame. With simple sine/math ops this should take <1 ms.
-- **Q19**: Can the ESP32 handle Bluetooth + WiFi simultaneously?
+- **Q20**: Can the ESP32 handle Bluetooth + WiFi simultaneously?
   - Yes, but they share the 2.4 GHz radio via time-division. This can introduce latency jitter on both WiFi and BT. We need to test if 40 FPS rendering + BT audio streaming is achievable.
 
 ### Verification Goals
@@ -312,11 +324,11 @@ Run a DSL-to-bytecode compiler on the ESP32 itself, so users can paste a DSL scr
 
 ### Choices to Make
 
-- **Q20**: Is the effort of porting ~2000+ lines of Zig parser+compiler to C worthwhile?
+- **Q21**: Is the effort of porting ~2000+ lines of Zig parser+compiler to C worthwhile?
   - *Alternative*: Instead of porting, we could have the phone send the DSL source to the ESP32, which forwards it to a PC for compilation, then receives the bytecode back. But this defeats the "no PC" goal.
   - *Alternative*: Write a minimal "DSL-lite" parser in C that supports a subset of the language.
   - *Assumption*: If implemented, do a faithful port of the full parser.
-- **Q21**: Should compiled bytecode be persistable (saved to NVS like the default shader hook)?
+- **Q22**: Should compiled bytecode be persistable (saved to NVS like the default shader hook)?
   - *Assumption*: Yes, so you can set a telnet-compiled shader as the default.
 
 ### Verification Goals
@@ -395,18 +407,19 @@ Run a DSL-to-bytecode compiler on the ESP32 itself, so users can paste a DSL scr
 | Q7 | Dedicated FreeRTOS task for telnet? | Telnet |
 | Q8 | RAM budget for telnet (~5 KB)? | Telnet |
 | Q9 | `top` one-shot or live-updating? | Telnet |
-| Q10 | AP always on (APSTA) or only on STA failure? | WiFi AP |
-| Q11 | Default AP password? | WiFi AP |
-| Q12 | Static IP on AP interface? | WiFi AP |
-| Q13 | **CRITICAL**: Drop OTA to fit Bluetooth, or other strategy? | Sound |
-| Q14 | Audio sample rate (44.1 kHz vs. lower)? | Sound |
-| Q15 | Audio in same DSL file as visuals? | Sound |
-| Q16 | Dayton Audio amplifier Bluetooth device name? | Sound |
-| Q17 | Audio only when shader has `audio` block? | Sound |
-| Q18 | Audio eval on core 0 or core 1? | Sound |
-| Q19 | BT + WiFi coexistence impact on 40 FPS? | Sound |
-| Q20 | Port full parser to C or use DSL-lite subset? | On-Device Compiler |
-| Q21 | Persist telnet-compiled bytecode to NVS? | On-Device Compiler |
+| Q10 | Tab completion: character-mode telnet acceptable? | Telnet |
+| Q11 | AP always on (APSTA) or only on STA failure? | WiFi AP |
+| Q12 | Default AP password? | WiFi AP |
+| Q13 | Static IP on AP interface? | WiFi AP |
+| Q14 | **CRITICAL**: Drop OTA to fit Bluetooth, or other strategy? | Sound |
+| Q15 | Audio sample rate (44.1 kHz vs. lower)? | Sound |
+| Q16 | Audio in same DSL file as visuals? | Sound |
+| Q17 | Dayton Audio amplifier Bluetooth device name? | Sound |
+| Q18 | Audio only when shader has `audio` block? | Sound |
+| Q19 | Audio eval on core 0 or core 1? | Sound |
+| Q20 | BT + WiFi coexistence impact on 40 FPS? | Sound |
+| Q21 | Port full parser to C or use DSL-lite subset? | On-Device Compiler |
+| Q22 | Persist telnet-compiled bytecode to NVS? | On-Device Compiler |
 
 ---
 
