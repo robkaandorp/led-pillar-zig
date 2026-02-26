@@ -375,6 +375,10 @@ Remove the legacy hand-coded Zig shader/effect implementations that predate the 
 - Any shared utility functions from `effects.zig` that the DSL runtime or other modules still use (verify before deleting)
 - The `display_logic.zig` coordinate mapping — this is used by everything
 
+### Port to DSL
+
+Before deleting the old Zig effects, port the **Infinite Lines** effect to a DSL shader file (`examples/dsl/v1/infinite-lines.dsl`). This effect features multiple rotating lines with coverage limiting and color transitions — worth preserving as a DSL shader. Use the Zig implementation as reference for the math and parameters.
+
 ### Verification Goals
 
 1. ✅ `src/effects.zig` is deleted or contains only shared utilities (if any)
@@ -383,6 +387,7 @@ Remove the legacy hand-coded Zig shader/effect implementations that predate the 
 4. ✅ `zig build` produces a smaller binary
 5. ✅ DSL-based effects (`dsl-file`, `bytecode-upload`, `native-shader-activate`) still work
 6. ✅ Simulator still works with DSL shaders
+7. ✅ `infinite-lines.dsl` visually reproduces the old Infinite Lines effect
 
 ---
 
