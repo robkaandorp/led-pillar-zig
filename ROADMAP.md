@@ -60,12 +60,13 @@ Useful for gamma curves, falloff shaping, easing. Currently the only option is `
 - One new builtin entry in parser, emitter, VM
 - Calls `powf()` in C
 
-### 2c: `mod(x, y)` — Modulo
+### 2c: `%` — Modulo operator
 
 Essential for repeating patterns and tiling. Currently no way to do modulo arithmetic in DSL.
 
-- New builtin or `%` operator in parser, emitter, VM
-- Calls `fmodf()` in C
+- Add `%` as an infix operator in the parser (same precedence as `*` and `/`)
+- C emitter outputs `fmodf(lhs, rhs)`
+- Bytecode VM adds a `MOD` opcode calling `fmodf()`
 
 ### Verification Goals
 
