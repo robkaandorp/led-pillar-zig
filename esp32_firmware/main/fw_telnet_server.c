@@ -303,7 +303,7 @@ static void tab_print_matches(int sock, const char *cwd, const char *prefix, boo
     }
 }
 
-static const char *cmd_names[] = { "ls", "cd", "pwd", "run", "stop", "top", "help", NULL };
+static const char *cmd_names[] = { "ls", "cd", "pwd", "run", "stop", "top", "help", "exit", NULL };
 
 static void handle_tab(int sock, char *line, size_t *line_len, const char *cwd) {
     // Determine what we're completing
@@ -393,7 +393,8 @@ static void cmd_help(int sock) {
         "  run <name>      Run a shader by name\r\n"
         "  stop            Stop the running shader\r\n"
         "  top             Show shader status\r\n"
-        "  help            Show this help\r\n");
+        "  help            Show this help\r\n"
+        "  exit            Disconnect (or Ctrl+D)\r\n");
 }
 
 static void cmd_pwd(int sock, const char *cwd) {
@@ -563,11 +564,12 @@ static void cmd_top(int sock, fw_tcp_server_state_t *state) {
 
 /* --- Command dispatch ---------------------------------------------------- */
 
-static void dispatch_command(int sock, fw_tcp_server_state_t *state,
+// Returns true if the client should be disconnected.
+static bool dispatch_command(int sock, fw_tcp_server_state_t *state,
                              const char *line, char *cwd) {
     // Skip leading whitespace
     while (*line == ' ') line++;
-    if (*line == '\0') return;
+    if (*line == '\0') return false;
 
     // Split command and argument
     char cmd[32];
@@ -599,11 +601,15 @@ static void dispatch_command(int sock, fw_tcp_server_state_t *state,
         cmd_stop(sock, state);
     } else if (strcmp(cmd, "top") == 0) {
         cmd_top(sock, state);
+    } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
+        telnet_send_str(sock, "Bye.\r\n");
+        return true;
     } else {
         char out[TELNET_OUT_MAX];
         int n = snprintf(out, sizeof(out), "Unknown command: %s\r\n", cmd);
         if (n > 0) telnet_send(sock, out, (size_t)n);
     }
+    return false;
 }
 
 /* --- Client session ------------------------------------------------------ */
@@ -653,6 +659,12 @@ static void telnet_handle_client(int sock, fw_tcp_server_state_t *state) {
             continue;
         }
 
+        // Ctrl+D: disconnect
+        if (ch == 0x04) {
+            telnet_send_str(sock, "Bye.\r\n");
+            break;
+        }
+
         // Ctrl+C: cancel current input
         if (ch == 0x03) {
             telnet_send_str(sock, "^C\r\n");
@@ -688,7 +700,7 @@ static void telnet_handle_client(int sock, fw_tcp_server_state_t *state) {
             }
             telnet_send_str(sock, "\r\n");
             line[line_len] = '\0';
-            dispatch_command(sock, state, line, cwd);
+            if (dispatch_command(sock, state, line, cwd)) break;
             line_len = 0;
             telnet_send_prompt(sock, cwd);
             continue;
