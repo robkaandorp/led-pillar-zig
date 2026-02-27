@@ -754,7 +754,7 @@ static void telnet_task(void *arg) {
             continue;
         }
 
-        ESP_LOGI(TAG, "Client connected from " IPSTR, IP2STR(&client_addr.sin_addr));
+        ESP_LOGI(TAG, "Client connected from %s", inet_ntoa(client_addr.sin_addr));
         telnet_handle_client(client_sock, state);
         close(client_sock);
         ESP_LOGI(TAG, "Client disconnected");
