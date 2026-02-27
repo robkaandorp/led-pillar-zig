@@ -78,4 +78,11 @@ config FW_OTA_HTTP_TIMEOUT_MS
     range 1000 120000
     default 10000
 
+config FW_TELNET_PORT
+    int "Telnet server port"
+    default 23
+    range 1 65535
+    help
+        Port for the telnet server.
+
 endmenu

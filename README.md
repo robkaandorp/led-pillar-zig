@@ -57,13 +57,14 @@ https://github.com/robkaandorp/tcp_led_stream
   - `dsl-file <path-to-effect.dsl>` (default; also writes compiled reference bytecode to `bytecode/<dsl-name>.bin`)
   - `dsl-compile <path-to-effect.dsl>` (compile-only mode; writes compiled reference bytecode to `bytecode/<dsl-name>.bin` and emits native shader C to `esp32_firmware/main/generated/dsl_shader_generated.c` without opening TCP)
   - `bytecode-upload <path-to-bytecode.bin|path-to-effect.dsl>` (protocol v3 bytecode upload + activate; `.dsl` is compiled first, then monitors shader FPS + slow frames until you press Enter)
-  - `native-shader-activate` (protocol v3 command to activate built-in firmware native C shader; monitors shader FPS + slow frames until you press Enter)
+  - `native-shader-activate [shader-name]` (protocol v3 command to activate a built-in firmware native C shader; optionally specify a shader name, defaults to first in registry; monitors shader FPS + slow frames until you press Enter)
   - `stop` (protocol v3 command to stop the currently running shader and clear the display to black)
   - `firmware-upload <path-to-led_pillar_firmware.bin>` (protocol v3 push OTA upload command)
 - On normal exit or `Ctrl+C`, the sender clears the LED display to black before disconnecting.
 - Run console TCP display simulator: `zig build simulator -- [port]`
 - The simulator renders the matrix and prints live stats (FPS, bytes/s, total frames, total bytes) below it.
-- It now also handles v3 shader control commands (`bytecode-upload`, `native-shader-activate`, `stop`, `query`) and renders frames by executing `esp32_firmware/main/generated/dsl_shader_generated.c`.
+- It now also handles v3 shader control commands (`bytecode-upload`, `native-shader-activate`, `stop`, `query`) and renders frames by executing the multi-shader registry from `esp32_firmware/main/generated/dsl_shader_registry.c`.
+- The simulator lists all available shaders at startup. Use `native-shader-activate <name>` to select one.
 - Run full tests: `zig build test`
 - Run tests in the library module: `zig build test-root`
 - Run tests in the executable module: `zig build test-main`
@@ -80,4 +81,4 @@ https://github.com/robkaandorp/tcp_led_stream
 - Keep code clear, simple, and easy to read.
 - Prefer less code when it improves clarity and maintainability.
 - Keep allocations and deallocations to a minimum; prefer allocating most required memory during startup.
-- For effect rendering, use the single-pass frame traversal abstraction (`renderColorFrameSinglePass` in `src\effects.zig`) so each logical pixel is visited once per frame.
+- For effect rendering, all shaders are DSL-authored and compiled to native C code via the shader registry.

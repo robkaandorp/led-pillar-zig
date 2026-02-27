@@ -72,50 +72,17 @@
 #define FW_STARTUP_WHITE_MS 1000U
 #define FW_SHADER_FRAME_INTERVAL_MS 25U
 
-typedef enum {
-    FW_TCP_SHADER_SOURCE_NONE = 0,
-    FW_TCP_SHADER_SOURCE_BYTECODE = 1,
-    FW_TCP_SHADER_SOURCE_NATIVE = 2,
-} fw_tcp_shader_source_t;
-
 /// Generate a random seed in [0, 1) from hardware RNG.
 static inline float fw_tcp_generate_seed(void) {
     return (float)(esp_random() >> 8) / 16777216.0f;
 }
 
-typedef struct {
-    bool started;
-    fw_led_layout_config_t layout;
-    uint32_t led_count;
-    uint8_t *frame_buffer;
-    size_t frame_buffer_len;
-    uint8_t *rx_buffer;
-    size_t rx_buffer_len;
-    uint8_t *bytecode_blob;
-    size_t bytecode_blob_len;
-    bool has_uploaded_program;
-    bool shader_active;
-    fw_tcp_shader_source_t shader_source;
-    const dsl_shader_entry_t *active_native_shader;
-    float native_shader_seed;
-    bool default_shader_persisted;
-    bool default_shader_faulted;
-    uint32_t shader_slow_frame_count;
-    uint32_t shader_last_slow_frame_ms;
-    uint32_t shader_frame_count;
-    bool uniform_last_color_valid;
-    uint8_t uniform_last_r;
-    uint8_t uniform_last_g;
-    uint8_t uniform_last_b;
-    fw_bc3_program_t uploaded_program;
-    fw_bc3_runtime_t runtime;
-    SemaphoreHandle_t state_lock;
-    uint16_t port;
-    fw_led_output_t led_output;
-} fw_tcp_server_state_t;
-
 static const char *TAG = "fw_tcp_srv";
 static fw_tcp_server_state_t g_fw_tcp_server = {0};
+
+fw_tcp_server_state_t *fw_tcp_server_get_state(void) {
+    return &g_fw_tcp_server;
+}
 
 static uint32_t fw_tcp_read_be_u32(const uint8_t *bytes) {
     return ((uint32_t)bytes[0] << 24U) | ((uint32_t)bytes[1] << 16U) | ((uint32_t)bytes[2] << 8U) | (uint32_t)bytes[3];
