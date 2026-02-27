@@ -237,6 +237,44 @@ pub fn writeShaderFunctions(
     try writeIndent(writer, 1);
     try writer.writeAll("*out_color = __dsl_out;\n");
     try writer.writeAll("}\n");
+
+    // Emit eval_audio if the program has audio statements
+    if (program.audio_statements.len > 0) {
+        const audio_fn_name = if (prefix) |p|
+            try std.fmt.allocPrint(temp_allocator, "{s}_eval_audio", .{p})
+        else
+            try std.fmt.allocPrint(temp_allocator, "dsl_shader_eval_audio", .{});
+
+        try writer.print(
+            \\
+            \\/* Audio: generated from effect: {s} */
+            \\{s}float {s}(float time, float seed) {{
+            \\
+        , .{ program.effect_name, static_kw, audio_fn_name });
+
+        var audio_name_counter: usize = 0;
+        var audio_scope = Scope.init(temp_allocator, null);
+        defer audio_scope.deinit();
+        try audio_scope.put("time", .{ .c_name = "time", .value_type = .scalar });
+        try audio_scope.put("seed", .{ .c_name = "seed", .value_type = .scalar });
+
+        for (program.params) |param| {
+            const param_type = try inferExprType(param.value, &audio_scope);
+            const c_name = try makeName(temp_allocator, "dsl_param", param.name, &audio_name_counter);
+            try writeIndent(writer, 1);
+            try writer.print("const {s} {s} = ", .{ cTypeName(param_type), c_name });
+            try emitExpr(writer, param.value, &audio_scope);
+            try writer.writeAll(";\n");
+            try audio_scope.put(param.name, .{ .c_name = c_name, .value_type = param_type });
+        }
+
+        try writeIndent(writer, 1);
+        try writer.writeAll("float __dsl_audio_out = 0.0f;\n");
+        try emitStatements(writer, temp_allocator, &audio_name_counter, &audio_scope, program.audio_statements, false, "__dsl_audio_out", 1);
+        try writeIndent(writer, 1);
+        try writer.writeAll("return __dsl_audio_out;\n");
+        try writer.writeAll("}\n");
+    }
 }
 
 fn emitStatements(
@@ -266,6 +304,12 @@ fn emitStatements(
                 try writer.print("{s} = dsl_blend_over(", .{out_name});
                 try emitExpr(writer, blend_expr, scope);
                 try writer.print(", {s});\n", .{out_name});
+            },
+            .out => |out_expr| {
+                try writeIndent(writer, indent);
+                try writer.print("{s} = ", .{out_name});
+                try emitExpr(writer, out_expr, scope);
+                try writer.writeAll(";\n");
             },
             .if_stmt => |if_stmt| {
                 try writeIndent(writer, indent);

@@ -85,4 +85,18 @@ config FW_TELNET_PORT
     help
         Port for the telnet server.
 
+config FW_AUDIO_ENABLED
+    bool "Enable 8-bit DAC audio output"
+    default y
+    help
+        Enable audio synthesis output via built-in DAC on GPIO25.
+
+config FW_AUDIO_SAMPLE_RATE
+    int "Audio sample rate (Hz)"
+    depends on FW_AUDIO_ENABLED
+    default 22050
+    range 8000 44100
+    help
+        Sample rate for audio output. 22050 Hz is sufficient for 8-bit DAC.
+
 endmenu

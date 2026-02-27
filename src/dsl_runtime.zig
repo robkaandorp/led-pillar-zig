@@ -60,6 +60,7 @@ const CompiledExpr = struct {
 const CompiledStatement = union(enum) {
     let_decl: LetDecl,
     blend: *const CompiledExpr,
+    out: *const CompiledExpr,
     if_stmt: IfStmt,
     for_stmt: ForStmt,
 
@@ -133,6 +134,7 @@ const BytecodeStatementOpcode = enum(u8) {
     blend = 2,
     if_stmt = 3,
     for_stmt = 4,
+    out = 5,
 };
 
 pub const Evaluator = struct {
@@ -249,6 +251,11 @@ pub const Evaluator = struct {
                     if (frame_mode) unreachable;
                     const src = asRgba(self.evalExpr(blend_expr, inputs));
                     out.* = sdf_common.ColorRgba.blendOver(src, out.*);
+                },
+                .out => |out_expr| {
+                    // Audio out: set output alpha channel to scalar value (repurposed for audio)
+                    const val = asScalar(self.evalExpr(out_expr, inputs));
+                    out.* = .{ .r = val, .g = 0, .b = 0, .a = 1 };
                 },
                 .if_stmt => |if_stmt| {
                     const condition = asScalar(self.evalExpr(if_stmt.condition, inputs));
@@ -537,6 +544,10 @@ fn compileStatements(
                 const compiled_expr = try compileExpr(allocator, blend_expr, param_lookup, frame_lookup, let_lookup, const_lookup);
                 try compiled.append(allocator, .{ .blend = compiled_expr });
             },
+            .out => |out_expr| {
+                const compiled_expr = try compileExpr(allocator, out_expr, param_lookup, frame_lookup, let_lookup, const_lookup);
+                try compiled.append(allocator, .{ .out = compiled_expr });
+            },
             .if_stmt => |if_stmt| {
                 const condition = try compileExpr(allocator, if_stmt.condition, param_lookup, frame_lookup, let_lookup, const_lookup);
 
@@ -782,6 +793,9 @@ fn maxExprStackInStatements(statements: []const CompiledStatement) usize {
             .blend => |blend_expr| {
                 max_stack = @max(max_stack, blend_expr.max_stack_depth);
             },
+            .out => |out_expr| {
+                max_stack = @max(max_stack, out_expr.max_stack_depth);
+            },
             .if_stmt => |if_stmt| {
                 max_stack = @max(max_stack, if_stmt.condition.max_stack_depth);
                 max_stack = @max(max_stack, maxExprStackInStatements(if_stmt.then_statements));
@@ -821,6 +835,10 @@ fn serializeCompiledStatements(writer: anytype, statements: []const CompiledStat
             .blend => |blend_expr| {
                 try writeU8(writer, @intFromEnum(BytecodeStatementOpcode.blend));
                 try serializeCompiledExpr(writer, blend_expr);
+            },
+            .out => |out_expr| {
+                try writeU8(writer, @intFromEnum(BytecodeStatementOpcode.out));
+                try serializeCompiledExpr(writer, out_expr);
             },
             .if_stmt => |if_stmt| {
                 try writeU8(writer, @intFromEnum(BytecodeStatementOpcode.if_stmt));

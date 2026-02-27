@@ -12,6 +12,7 @@
 #include "fw_led_config.h"
 #include "fw_tcp_server.h"
 #include "fw_telnet_server.h"
+#include "fw_audio_output.h"
 #include "ota_hooks.h"
 
 static const char *TAG = "fw_main";
@@ -154,6 +155,14 @@ void app_main(void) {
     fw_init_wifi();
     ESP_ERROR_CHECK(fw_tcp_server_start(&g_fw_layout, FW_TCP_DEFAULT_PORT));
     ESP_ERROR_CHECK(fw_telnet_server_start(CONFIG_FW_TELNET_PORT, fw_tcp_server_get_state()));
+#if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
+    {
+        fw_audio_config_t audio_cfg = FW_AUDIO_CONFIG_DEFAULT();
+        audio_cfg.sample_rate = CONFIG_FW_AUDIO_SAMPLE_RATE;
+        ESP_ERROR_CHECK(fw_audio_output_init(&audio_cfg));
+        ESP_LOGI(TAG, "Audio output initialized at %d Hz", CONFIG_FW_AUDIO_SAMPLE_RATE);
+    }
+#endif
     fw_ota_init();
     ESP_LOGI(TAG, "Scaffold initialization complete");
 }

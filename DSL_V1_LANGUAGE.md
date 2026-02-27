@@ -17,6 +17,7 @@ A valid DSL program must include:
 2. Zero or more `param` declarations
 3. One or more `layer` blocks
 4. One `emit` statement
+5. Zero or one `audio` block (optional; produces audio output)
 
 Top-level statement order is flexible, but all required parts must exist exactly once where required.
 
@@ -24,20 +25,23 @@ Top-level statement order is flexible, but all required parts must exist exactly
 
 ```ebnf
 program        = top_level* EOF ;
-top_level      = effect_decl | param_decl | frame_decl | layer_decl | emit_stmt ;
+top_level      = effect_decl | param_decl | frame_decl | layer_decl | audio_decl | emit_stmt ;
 
 effect_decl    = "effect" IDENT ;
 param_decl     = "param" IDENT "=" expr ;
 frame_decl     = "frame" "{" stmt* "}" ;
 layer_decl     = "layer" IDENT "{" layer_stmt* "}" ;
+audio_decl     = "audio" "{" audio_stmt* "}" ;
 emit_stmt      = "emit" ;
 
 stmt           = let_decl | if_stmt | for_stmt ;
 layer_stmt     = stmt | blend_stmt ;
+audio_stmt     = stmt | out_stmt ;
 let_decl       = "let" IDENT "=" expr ;
 if_stmt        = "if" expr "{" layer_stmt* "}" [ "else" "{" layer_stmt* "}" ] ;
 for_stmt       = "for" IDENT "in" INTEGER ".." INTEGER "{" layer_stmt* "}" ;
 blend_stmt     = "blend" expr ;
+out_stmt       = "out" expr ;
 
 expr           = additive ;
 additive       = multiplicative (("+" | "-") multiplicative)* ;
@@ -161,6 +165,9 @@ blend rgba(0.2, 0.8, 1.0, a)
 - `for` uses an integer range and the loop index is a scalar identifier.
 - `if` condition must type-check to `scalar` (`> 0` is treated as true at runtime).
 - `blend` expression must type-check to `rgba`.
+- `out` expression must type-check to `scalar` (used in `audio` blocks only).
+- `audio` block is optional and runs once per audio sample. It receives `time` and `seed` but not pixel coordinates.
+- The `out` statement sets the audio output value (expected range `[-1, 1]`; clamped to `[0, 255]` 8-bit on the ESP32 DAC).
 - Arithmetic operators (`+`, `-`, `*`, `/`) are scalar-only.
 - Unary `-` is scalar-only.
 - Function calls must match known builtin name, arity, and argument types exactly.
@@ -186,7 +193,7 @@ Transport note:
 The parser/validator rejects:
 
 - Missing required top-level constructs: `effect`, `layer`, `emit`
-- Duplicate `effect`, `frame`, or `emit`
+- Duplicate `effect`, `frame`, `audio`, or `emit`
 - Unknown top-level or layer statements
 - Duplicate names:
   - duplicate `param`

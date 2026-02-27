@@ -29,6 +29,7 @@
 #include "fw_bytecode_vm.h"
 #include "fw_led_output.h"
 #include "fw_native_shader.h"
+#include "fw_audio_output.h"
 
 #ifdef CONFIG_FW_V12_REMAP_LOGICAL
 #define FW_V12_REMAP_LOGICAL true
@@ -318,6 +319,44 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
     if (rc != 0) {
         return ESP_FAIL;
     }
+
+    /* Generate audio samples if this shader has an audio function. */
+#if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
+    if (state->active_native_shader != NULL && state->active_native_shader->has_audio_func &&
+        state->active_native_shader->eval_audio != NULL) {
+        if (!fw_audio_output_is_active()) {
+            fw_audio_output_start();
+        }
+        const uint32_t sample_rate = fw_audio_output_get_sample_rate();
+        const uint32_t samples_per_frame = sample_rate / 40U;
+        uint8_t audio_buf[1024];
+        const uint32_t count = samples_per_frame < sizeof(audio_buf) ? samples_per_frame : (uint32_t)sizeof(audio_buf);
+        const float inv_sr = 1.0f / (float)sample_rate;
+        /* Simple LFSR-based triangular dither state. */
+        static uint32_t dither_state = 0x12345678U;
+        for (uint32_t i = 0; i < count; i++) {
+            float sample_time = time_seconds + (float)i * inv_sr;
+            float sample = state->active_native_shader->eval_audio(sample_time, state->native_shader_seed);
+            /* Clamp to [-1, 1] */
+            if (sample > 1.0f) sample = 1.0f;
+            if (sample < -1.0f) sample = -1.0f;
+            /* Triangular dither: two uniform random values subtracted, range [-1/255, 1/255] */
+            dither_state ^= dither_state << 13;
+            dither_state ^= dither_state >> 17;
+            dither_state ^= dither_state << 5;
+            float dither = ((float)(dither_state & 0xFFU) - 128.0f) / (128.0f * 255.0f);
+            /* Map [-1,1] → [0,255] with dither */
+            float mapped = (sample + 1.0f) * 127.5f + dither;
+            int32_t quantized = (int32_t)(mapped + 0.5f);
+            if (quantized < 0) quantized = 0;
+            if (quantized > 255) quantized = 255;
+            audio_buf[i] = (uint8_t)quantized;
+        }
+        fw_audio_output_push(audio_buf, count, 25);
+    } else if (fw_audio_output_is_active()) {
+        fw_audio_output_stop();
+    }
+#endif
 
     return fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
 }
@@ -717,6 +756,11 @@ static uint8_t fw_tcp_handle_v3_stop_shader(fw_tcp_server_state_t *state) {
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
     state->uniform_last_color_valid = false;
+#if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
+    if (fw_audio_output_is_active()) {
+        fw_audio_output_stop();
+    }
+#endif
     esp_err_t clear_err = fw_led_output_push_uniform_rgb(&state->led_output, 0U, 0U, 0U);
     xSemaphoreGive(state->state_lock);
     if (clear_err != ESP_OK) {

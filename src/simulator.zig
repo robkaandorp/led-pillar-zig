@@ -23,12 +23,16 @@ const EmittedShaderColor = extern struct {
 const ShaderEvalPixelFn = *const fn (f32, f32, f32, f32, f32, f32, f32, *EmittedShaderColor) callconv(.c) void;
 const ShaderEvalFrameFn = *const fn (f32, f32) callconv(.c) void;
 
+const ShaderEvalAudioFn = *const fn (f32, f32) callconv(.c) f32;
+
 const ShaderRegistryEntry = extern struct {
     name: [*:0]const u8,
     folder: [*:0]const u8,
     eval_pixel: ShaderEvalPixelFn,
     has_frame_func: c_int,
     eval_frame: ?ShaderEvalFrameFn,
+    has_audio_func: c_int,
+    eval_audio: ?ShaderEvalAudioFn,
 };
 
 extern const dsl_shader_registry_count: c_int;

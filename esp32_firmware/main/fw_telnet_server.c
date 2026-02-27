@@ -461,8 +461,9 @@ static void cmd_ls(int sock, const char *cwd) {
     // List shaders in cwd
     for (int i = 0; i < dsl_shader_registry_count; i++) {
         if (strcmp(dsl_shader_registry[i].folder, cwd) != 0) continue;
-        const char *flags = dsl_shader_registry[i].has_frame_func ? " [native] [frame]" : " [native]";
-        int n = snprintf(out, sizeof(out), "%-25s%s\r\n", dsl_shader_registry[i].name, flags);
+        const char *frame_flag = dsl_shader_registry[i].has_frame_func ? " [frame]" : "";
+        const char *audio_flag = dsl_shader_registry[i].has_audio_func ? " [audio]" : "";
+        int n = snprintf(out, sizeof(out), "%-25s [native]%s%s\r\n", dsl_shader_registry[i].name, frame_flag, audio_flag);
         if (n > 0) telnet_send(sock, out, (size_t)n);
         any = true;
     }
@@ -536,11 +537,13 @@ static void cmd_top(int sock, fw_tcp_server_state_t *state) {
     const char *status = "stopped";
     uint32_t frames = 0;
     uint32_t slow = 0;
+    bool has_audio = false;
 
     xSemaphoreTake(state->state_lock, portMAX_DELAY);
     if (state->shader_active && state->active_native_shader != NULL) {
         name = state->active_native_shader->name;
         status = "running";
+        has_audio = state->active_native_shader->has_audio_func != 0;
     }
     frames = state->shader_frame_count;
     slow = state->shader_slow_frame_count;
@@ -551,8 +554,10 @@ static void cmd_top(int sock, fw_tcp_server_state_t *state) {
         "Status:      %s\r\n"
         "FPS:         40.0\r\n"
         "Frames:      %" PRIu32 "\r\n"
-        "Slow frames: %" PRIu32 "\r\n",
-        name, status, frames, slow);
+        "Slow frames: %" PRIu32 "\r\n"
+        "Audio:       %s\r\n",
+        name, status, frames, slow,
+        has_audio ? "active" : "none");
     if (n > 0) telnet_send(sock, out, (size_t)n);
 }
 

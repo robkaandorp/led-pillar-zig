@@ -67,6 +67,7 @@ pub const Expr = union(enum) {
 pub const Statement = union(enum) {
     let_decl: LetDecl,
     blend: *Expr,
+    out: *Expr,
     if_stmt: IfStmt,
     for_range: ForRange,
 
@@ -104,6 +105,7 @@ pub const Program = struct {
     params: []const Param,
     frame_statements: []const Statement,
     layers: []const Layer,
+    audio_statements: []const Statement,
     has_emit: bool,
 };
 
@@ -142,6 +144,7 @@ const keyword_names = [_][]const u8{
     "param",
     "layer",
     "frame",
+    "audio",
     "let",
     "if",
     "else",
@@ -149,6 +152,7 @@ const keyword_names = [_][]const u8{
     "in",
     "blend",
     "emit",
+    "out",
 };
 
 const input_names = [_][]const u8{
@@ -315,6 +319,8 @@ const Parser = struct {
         var frame_statements: []const Statement = try self.allocator.alloc(Statement, 0);
         var has_frame_block = false;
         var layers = std.ArrayList(Layer).empty;
+        var audio_statements: []const Statement = try self.allocator.alloc(Statement, 0);
+        var has_audio_block = false;
 
         while (self.current.tag != .eof) {
             if (self.current.tag != .identifier) return error.UnexpectedToken;
@@ -352,7 +358,17 @@ const Parser = struct {
                 if (has_frame_block) return error.DuplicateFrameBlock;
                 has_frame_block = true;
                 try self.expect(.l_brace);
-                frame_statements = try self.parseStatementsUntil(.r_brace, false);
+                frame_statements = try self.parseStatementsUntil(.r_brace, false, false);
+                try self.expect(.r_brace);
+                continue;
+            }
+
+            if (std.mem.eql(u8, keyword, "audio")) {
+                try self.advance();
+                if (has_audio_block) return error.DuplicateAudioBlock;
+                has_audio_block = true;
+                try self.expect(.l_brace);
+                audio_statements = try self.parseStatementsUntil(.r_brace, false, true);
                 try self.expect(.r_brace);
                 continue;
             }
@@ -376,6 +392,7 @@ const Parser = struct {
             .params = try params.toOwnedSlice(self.allocator),
             .frame_statements = frame_statements,
             .layers = try layers.toOwnedSlice(self.allocator),
+            .audio_statements = audio_statements,
             .has_emit = has_emit,
         };
     }
@@ -383,7 +400,7 @@ const Parser = struct {
     fn parseLayer(self: *Parser) !Layer {
         const name = try self.expectIdentifier();
         try self.expect(.l_brace);
-        const statements = try self.parseStatementsUntil(.r_brace, true);
+        const statements = try self.parseStatementsUntil(.r_brace, true, false);
 
         try self.expect(.r_brace);
         return .{
@@ -392,16 +409,16 @@ const Parser = struct {
         };
     }
 
-    fn parseStatementsUntil(self: *Parser, end_tag: TokenTag, allow_blend: bool) anyerror![]const Statement {
+    fn parseStatementsUntil(self: *Parser, end_tag: TokenTag, allow_blend: bool, allow_out: bool) anyerror![]const Statement {
         var statements = std.ArrayList(Statement).empty;
         while (self.current.tag != end_tag) {
             if (self.current.tag == .eof) return error.UnexpectedEof;
-            try statements.append(self.allocator, try self.parseStatement(allow_blend));
+            try statements.append(self.allocator, try self.parseStatement(allow_blend, allow_out));
         }
         return statements.toOwnedSlice(self.allocator);
     }
 
-    fn parseStatement(self: *Parser, allow_blend: bool) anyerror!Statement {
+    fn parseStatement(self: *Parser, allow_blend: bool, allow_out: bool) anyerror!Statement {
         if (self.current.tag != .identifier) return error.UnknownLayerStatement;
 
         const keyword = self.current.lexeme;
@@ -425,18 +442,25 @@ const Parser = struct {
             return .{ .blend = value };
         }
 
+        if (std.mem.eql(u8, keyword, "out")) {
+            if (!allow_out) return error.InvalidFrameStatement;
+            try self.advance();
+            const value = try self.parseExpression();
+            return .{ .out = value };
+        }
+
         if (std.mem.eql(u8, keyword, "if")) {
             try self.advance();
             const condition = try self.parseExpression();
             try self.expect(.l_brace);
-            const then_statements = try self.parseStatementsUntil(.r_brace, allow_blend);
+            const then_statements = try self.parseStatementsUntil(.r_brace, allow_blend, allow_out);
             try self.expect(.r_brace);
 
             var else_statements: []const Statement = try self.allocator.alloc(Statement, 0);
             if (self.current.tag == .identifier and std.mem.eql(u8, self.current.lexeme, "else")) {
                 try self.advance();
                 try self.expect(.l_brace);
-                else_statements = try self.parseStatementsUntil(.r_brace, allow_blend);
+                else_statements = try self.parseStatementsUntil(.r_brace, allow_blend, allow_out);
                 try self.expect(.r_brace);
             }
 
@@ -460,7 +484,7 @@ const Parser = struct {
             try self.expect(.dotdot);
             const end_exclusive = try self.expectNonNegativeInteger();
             try self.expect(.l_brace);
-            const statements = try self.parseStatementsUntil(.r_brace, allow_blend);
+            const statements = try self.parseStatementsUntil(.r_brace, allow_blend, allow_out);
             try self.expect(.r_brace);
             return .{
                 .for_range = .{
@@ -648,6 +672,13 @@ fn validateProgram(allocator: std.mem.Allocator, program: *const Program) !void 
         defer visible_let_types.deinit();
         try validateStatements(allocator, layer.statements, true, &param_types, &visible_let_types, false);
     }
+
+    // Validate audio block (if present)
+    if (program.audio_statements.len > 0) {
+        var audio_types = std.StringHashMap(ValueType).init(allocator);
+        defer audio_types.deinit();
+        try validateStatements(allocator, program.audio_statements, false, &param_types, &audio_types, false);
+    }
 }
 
 fn validateStatements(
@@ -673,6 +704,10 @@ fn validateStatements(
                 if (!allow_blend) return error.InvalidFrameStatement;
                 const blend_type = try inferExprType(blend_expr, param_types, visible_let_types);
                 if (blend_type != .rgba) return error.InvalidBlendType;
+            },
+            .out => |out_expr| {
+                const out_type = try inferExprType(out_expr, param_types, visible_let_types);
+                if (out_type != .scalar) return error.InvalidOutType;
             },
             .if_stmt => |if_stmt| {
                 if (frame_mode and exprUsesXYInput(if_stmt.condition)) return error.InvalidFrameExpressionInput;

@@ -482,28 +482,70 @@ static void soap_bubbles_eval_pixel(float time, float frame, float x, float y, f
     *out_color = __dsl_out;
 }
 
+/* Generated from effect: tone_pulse */
+static void tone_pulse_eval_frame(float time, float frame) {
+    const float dsl_param_base_freq_0 = 220.000000f;
+    const float dsl_param_pulse_rate_1 = 2.000000f;
+    const float dsl_let_pulse_2 = dsl_clamp(((sinf(((time * dsl_param_pulse_rate_1) * 6.283185f)) * 0.500000f) + 0.500000f), 0.000000f, 1.000000f);
+    const float dsl_let_brightness_3 = (dsl_let_pulse_2 * dsl_let_pulse_2);
+}
+
+/* Generated from effect: tone_pulse */
+static void tone_pulse_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_base_freq_0 = 220.000000f;
+    const float dsl_param_pulse_rate_1 = 2.000000f;
+    const float dsl_let_pulse_2 = dsl_clamp(((sinf(((time * dsl_param_pulse_rate_1) * 6.283185f)) * 0.500000f) + 0.500000f), 0.000000f, 1.000000f);
+    const float dsl_let_brightness_3 = (dsl_let_pulse_2 * dsl_let_pulse_2);
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer glow */
+    const float dsl_let_hue_4 = dsl_fract(((time * 0.050000f) + seed));
+    const float dsl_let_r_5 = dsl_clamp(((sinf((dsl_let_hue_4 * 6.283185f)) * 0.500000f) + 0.500000f), 0.000000f, 1.000000f);
+    const float dsl_let_g_6 = dsl_clamp(((sinf(((dsl_let_hue_4 * 6.283185f) + 2.094000f)) * 0.500000f) + 0.500000f), 0.000000f, 1.000000f);
+    const float dsl_let_b_7 = dsl_clamp(((sinf(((dsl_let_hue_4 * 6.283185f) + 4.189000f)) * 0.500000f) + 0.500000f), 0.000000f, 1.000000f);
+    const float dsl_let_dist_8 = (fabsf(((y / height) - 0.500000f)) * 2.000000f);
+    const float dsl_let_mask_9 = dsl_clamp((1.000000f - dsl_let_dist_8), 0.000000f, 1.000000f);
+    const float dsl_let_intensity_10 = (dsl_let_brightness_3 * dsl_let_mask_9);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = (dsl_let_r_5 * dsl_let_intensity_10), .g = (dsl_let_g_6 * dsl_let_intensity_10), .b = (dsl_let_b_7 * dsl_let_intensity_10), .a = dsl_let_intensity_10 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Audio: generated from effect: tone_pulse */
+static float tone_pulse_eval_audio(float time, float seed) {
+    const float dsl_param_base_freq_0 = 220.000000f;
+    const float dsl_param_pulse_rate_1 = 2.000000f;
+    float __dsl_audio_out = 0.0f;
+    const float dsl_let_pulse_2 = dsl_clamp(((sinf(((time * dsl_param_pulse_rate_1) * 6.283185f)) * 0.500000f) + 0.500000f), 0.000000f, 1.000000f);
+    const float dsl_let_freq_3 = (dsl_param_base_freq_0 + (dsl_let_pulse_2 * dsl_param_base_freq_0));
+    const float dsl_let_envelope_4 = ((dsl_let_pulse_2 * dsl_let_pulse_2) * 0.400000f);
+    __dsl_audio_out = (sinf(((time * dsl_let_freq_3) * 6.283185f)) * dsl_let_envelope_4);
+    return __dsl_audio_out;
+}
+
 typedef struct {
     const char *name;
     const char *folder;
     void (*eval_pixel)(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color);
     int has_frame_func;
     void (*eval_frame)(float time, float frame);
+    int has_audio_func;
+    float (*eval_audio)(float time, float seed);
 } dsl_shader_entry_t;
 
 const dsl_shader_entry_t dsl_shader_registry[] = {
-    { .name = "aurora", .folder = "/native", .eval_pixel = aurora_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 },
-    { .name = "aurora-ribbons-classic", .folder = "/native", .eval_pixel = aurora_ribbons_classic_eval_pixel, .has_frame_func = 1, .eval_frame = aurora_ribbons_classic_eval_frame },
-    { .name = "campfire", .folder = "/native", .eval_pixel = campfire_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 },
-    { .name = "chaos-nebula", .folder = "/native", .eval_pixel = chaos_nebula_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 },
-    { .name = "dream-weaver", .folder = "/native", .eval_pixel = dream_weaver_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 },
-    { .name = "gradient", .folder = "/native", .eval_pixel = gradient_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 },
-    { .name = "infinite-lines", .folder = "/native", .eval_pixel = infinite_lines_eval_pixel, .has_frame_func = 1, .eval_frame = infinite_lines_eval_frame },
-    { .name = "primal-storm", .folder = "/native", .eval_pixel = primal_storm_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 },
-    { .name = "rain-ripple", .folder = "/native", .eval_pixel = rain_ripple_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 },
-    { .name = "soap-bubbles", .folder = "/native", .eval_pixel = soap_bubbles_eval_pixel, .has_frame_func = 1, .eval_frame = soap_bubbles_eval_frame },
+    { .name = "aurora", .folder = "/native", .eval_pixel = aurora_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "aurora-ribbons-classic", .folder = "/native", .eval_pixel = aurora_ribbons_classic_eval_pixel, .has_frame_func = 1, .eval_frame = aurora_ribbons_classic_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "campfire", .folder = "/native", .eval_pixel = campfire_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "chaos-nebula", .folder = "/native", .eval_pixel = chaos_nebula_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "dream-weaver", .folder = "/native", .eval_pixel = dream_weaver_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "gradient", .folder = "/native", .eval_pixel = gradient_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "infinite-lines", .folder = "/native", .eval_pixel = infinite_lines_eval_pixel, .has_frame_func = 1, .eval_frame = infinite_lines_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "primal-storm", .folder = "/native", .eval_pixel = primal_storm_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "rain-ripple", .folder = "/native", .eval_pixel = rain_ripple_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "soap-bubbles", .folder = "/native", .eval_pixel = soap_bubbles_eval_pixel, .has_frame_func = 1, .eval_frame = soap_bubbles_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
+    { .name = "tone-pulse", .folder = "/native", .eval_pixel = tone_pulse_eval_pixel, .has_frame_func = 1, .eval_frame = tone_pulse_eval_frame, .has_audio_func = 1, .eval_audio = tone_pulse_eval_audio },
 };
 
-const int dsl_shader_registry_count = 10;
+const int dsl_shader_registry_count = 11;
 
 #include <string.h>
 

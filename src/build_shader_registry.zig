@@ -14,6 +14,7 @@ const ShaderEntry = struct {
     filename: []const u8,
     folder: []const u8,
     has_frame: bool,
+    has_audio: bool,
 };
 
 /// Derive a C-safe prefix from a DSL filename: "chaos-nebula.dsl" → "chaos_nebula"
@@ -97,6 +98,8 @@ pub fn generate(allocator: std.mem.Allocator, dsl_dir_path: []const u8, output_d
             \\    void (*eval_pixel)(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color);
             \\    int has_frame_func;
             \\    void (*eval_frame)(float time, float frame);
+            \\    int has_audio_func;
+            \\    float (*eval_audio)(float time, float seed);
             \\} dsl_shader_entry_t;
             \\
             \\
@@ -104,11 +107,18 @@ pub fn generate(allocator: std.mem.Allocator, dsl_dir_path: []const u8, output_d
 
         try w.print("const dsl_shader_entry_t dsl_shader_registry[] = {{\n", .{});
         for (entries.items) |entry| {
+            try w.print("    {{ .name = \"{s}\", .folder = \"{s}\", .eval_pixel = {s}_eval_pixel", .{ entry.name, entry.folder, entry.prefix });
             if (entry.has_frame) {
-                try w.print("    {{ .name = \"{s}\", .folder = \"{s}\", .eval_pixel = {s}_eval_pixel, .has_frame_func = 1, .eval_frame = {s}_eval_frame }},\n", .{ entry.name, entry.folder, entry.prefix, entry.prefix });
+                try w.print(", .has_frame_func = 1, .eval_frame = {s}_eval_frame", .{entry.prefix});
             } else {
-                try w.print("    {{ .name = \"{s}\", .folder = \"{s}\", .eval_pixel = {s}_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0 }},\n", .{ entry.name, entry.folder, entry.prefix });
+                try w.writeAll(", .has_frame_func = 0, .eval_frame = (void(*)(float,float))0");
             }
+            if (entry.has_audio) {
+                try w.print(", .has_audio_func = 1, .eval_audio = {s}_eval_audio", .{entry.prefix});
+            } else {
+                try w.writeAll(", .has_audio_func = 0, .eval_audio = (float(*)(float,float))0");
+            }
+            try w.writeAll(" },\n");
         }
         try w.writeAll("};\n\n");
         try w.print("const int dsl_shader_registry_count = {d};\n\n", .{entries.items.len});
@@ -164,6 +174,8 @@ pub fn generate(allocator: std.mem.Allocator, dsl_dir_path: []const u8, output_d
             \\    void (*eval_pixel)(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color);
             \\    int has_frame_func;
             \\    void (*eval_frame)(float time, float frame);
+            \\    int has_audio_func;
+            \\    float (*eval_audio)(float time, float seed);
             \\} dsl_shader_entry_t;
             \\
             \\extern const dsl_shader_entry_t dsl_shader_registry[];
@@ -237,6 +249,7 @@ fn collectDslFilesRecursive(
                 .filename = rel_path,
                 .folder = folder,
                 .has_frame = program.frame_statements.len > 0,
+                .has_audio = program.audio_statements.len > 0,
             });
         }
     }

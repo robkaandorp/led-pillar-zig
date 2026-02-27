@@ -72,8 +72,8 @@ https://github.com/robkaandorp/tcp_led_stream
 - DSL feasibility research and example syntax: `DSL_FEASIBILITY_FINDINGS.md`
 - DSL v1 parser language spec: `DSL_V1_LANGUAGE.md`
 - DSL v1 example files: `examples\dsl\v1\`
-  - Includes shaders like `soap-bubbles.dsl`, `infinite-lines.dsl`, `chaos-nebula.dsl`, and more.
-  - DSL supports optional `frame` blocks plus `for`/`if` control flow in effect blocks.
+  - Includes shaders like `soap-bubbles.dsl`, `infinite-lines.dsl`, `chaos-nebula.dsl`, `tone-pulse.dsl` (with audio), and more.
+  - DSL supports optional `frame` blocks, `audio` blocks (8-bit DAC sound output), plus `for`/`if` control flow in effect blocks.
 
 ## Development principles
 
