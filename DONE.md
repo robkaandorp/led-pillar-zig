@@ -47,8 +47,7 @@ FreeRTOS task (6 KB stack, priority 3) running a character-mode telnet server on
 ### Phase 3: Firmware Integration
 Audio sample generation on core 1 after pixel render (~551 samples/frame). Triangular dither via LFSR. Maps [-1,1] → [0,255]. Auto-starts audio when shader with audio block is activated, auto-stops otherwise. Telnet `top` shows audio status, `ls` shows `[audio]` flag.
 
-### Phase 4: Higher Quality (future, not yet needed)
-External I2S DAC upgrade path documented. Bluetooth A2DP documented but won't fit with OTA.
+Audio quality upgrade paths (external I2S DAC, Bluetooth A2DP) documented in [FUTURE_IDEAS.md](FUTURE_IDEAS.md).
 
 **Commit**: `e6b8df1`
 
