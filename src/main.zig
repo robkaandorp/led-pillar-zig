@@ -21,6 +21,7 @@ const RunConfig = struct {
     dsl_file_path: ?[]const u8 = null,
     bytecode_file_path: ?[]const u8 = null,
     firmware_file_path: ?[]const u8 = null,
+    shader_name: ?[]const u8 = null,
 };
 
 const v3_protocol_version: u8 = 0x03;
@@ -79,7 +80,7 @@ pub fn main() !void {
         return;
     }
     if (run_config.effect == .native_shader_activate) {
-        try runNativeShaderActivate(run_config.host, run_config.port);
+        try runNativeShaderActivate(run_config.host, run_config.port, run_config.shader_name);
         return;
     }
     if (run_config.effect == .stop) {
@@ -265,8 +266,12 @@ fn runFirmwareUpload(host: []const u8, port: u16, firmware_file_path: []const u8
     std.debug.print("Firmware upload accepted (status=OK); device should reboot into the new image.\n", .{});
 }
 
-fn runNativeShaderActivate(host: []const u8, port: u16) !void {
-    std.debug.print("Activating built-in native C shader...\n", .{});
+fn runNativeShaderActivate(host: []const u8, port: u16, shader_name: ?[]const u8) !void {
+    if (shader_name) |name| {
+        std.debug.print("Activating native shader '{s}'...\n", .{name});
+    } else {
+        std.debug.print("Activating built-in native C shader...\n", .{});
+    }
     std.debug.print("Connecting to {s}:{d}...\n", .{ host, port });
     var stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
     defer stream.close();
@@ -274,7 +279,14 @@ fn runNativeShaderActivate(host: []const u8, port: u16) !void {
     var reader = stream.reader(&reader_buffer);
     std.debug.print("Connected.\n", .{});
 
-    try writeV3Header(&stream, v3_cmd_activate_native_shader, 0);
+    if (shader_name) |name| {
+        const payload_len: u32 = @intCast(name.len + 1);
+        try writeV3Header(&stream, v3_cmd_activate_native_shader, payload_len);
+        try stream.writeAll(name);
+        try stream.writeAll(&[_]u8{0});
+    } else {
+        try writeV3Header(&stream, v3_cmd_activate_native_shader, 0);
+    }
     const response = try readV3StatusResponse(&reader, v3_cmd_activate_native_shader);
     if (response.status != 0) {
         std.debug.print(
@@ -480,7 +492,13 @@ fn parseRunConfig(args: anytype) !RunConfig {
     }
 
     switch (run_config.effect) {
-        .native_shader_activate, .stop => {
+        .native_shader_activate => {
+            if (args.next()) |name_arg| {
+                run_config.shader_name = name_arg;
+            }
+            if (args.next() != null) return error.TooManyArguments;
+        },
+        .stop => {
             if (args.next() != null) return error.TooManyArguments;
         },
         .dsl_compile => {
@@ -873,11 +891,21 @@ test "parseRunConfig parses native-shader-activate mode" {
     };
     const run_config = try parseRunConfig(&args);
     try std.testing.expectEqual(.native_shader_activate, run_config.effect);
+    try std.testing.expectEqual(null, run_config.shader_name);
+}
+
+test "parseRunConfig parses native-shader-activate with shader name" {
+    var args = TestArgs{
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "native-shader-activate", "chaos-nebula" },
+    };
+    const run_config = try parseRunConfig(&args);
+    try std.testing.expectEqual(.native_shader_activate, run_config.effect);
+    try std.testing.expectEqualStrings("chaos-nebula", run_config.shader_name.?);
 }
 
 test "parseRunConfig native-shader-activate rejects extra args" {
     var args = TestArgs{
-        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "native-shader-activate", "extra" },
+        .values = &[_][]const u8{ "led-pillar-zig", "192.168.1.22", "native-shader-activate", "chaos-nebula", "extra" },
     };
     try std.testing.expectError(error.TooManyArguments, parseRunConfig(&args));
 }

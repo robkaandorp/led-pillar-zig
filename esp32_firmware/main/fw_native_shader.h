@@ -3,29 +3,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
-typedef struct {
-    float r;
-    float g;
-    float b;
-    float a;
-} fw_native_shader_color_t;
-
-void fw_native_shader_eval_pixel(
-    float time_seconds,
-    float frame_counter,
-    float x,
-    float y,
-    float width,
-    float height,
-    float seed,
-    fw_native_shader_color_t *out_color
-);
+#include "generated/dsl_shader_registry.h"
 
 /**
- * Render a full frame into an RGB frame buffer.
- * Keeps the pixel loop in the same translation unit as the generated shader
- * so the compiler can fully inline dsl_shader_eval_pixel.
+ * Render a full frame into an RGB frame buffer using the given shader entry.
+ * Keeps the pixel loop in the same translation unit as the generated shaders
+ * so the compiler can fully inline eval_pixel via __attribute__((flatten)).
  *
+ * @param shader         Shader entry from the registry (must not be NULL).
  * @param time_seconds   Elapsed time since shader start.
  * @param frame_counter  Monotonically increasing frame index.
  * @param width          Grid width (columns).
@@ -37,6 +22,7 @@ void fw_native_shader_eval_pixel(
  * @return 0 on success, -1 on error.
  */
 int fw_native_shader_render_frame(
+    const dsl_shader_entry_t *shader,
     float time_seconds,
     float frame_counter,
     uint16_t width,

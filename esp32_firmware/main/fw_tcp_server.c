@@ -96,6 +96,7 @@ typedef struct {
     bool has_uploaded_program;
     bool shader_active;
     fw_tcp_shader_source_t shader_source;
+    const dsl_shader_entry_t *active_native_shader;
     float native_shader_seed;
     bool default_shader_persisted;
     bool default_shader_faulted;
@@ -337,6 +338,7 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
     state->uniform_last_color_valid = false;
 
     int rc = fw_native_shader_render_frame(
+        state->active_native_shader,
         time_seconds,
         (float)frame_counter,
         state->layout.width,
@@ -688,22 +690,43 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
     return FW_TCP_V3_STATUS_OK;
 }
 
-static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state) {
+static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state, const uint8_t *payload, size_t payload_len) {
     if (state == NULL) {
         return FW_TCP_V3_STATUS_INTERNAL;
     }
+
+    const dsl_shader_entry_t *shader = NULL;
+    if (payload_len == 0U) {
+        shader = dsl_shader_get(0);
+    } else {
+        // Ensure null-terminated name (payload may not be terminated).
+        char name_buf[128];
+        size_t copy_len = payload_len < sizeof(name_buf) - 1U ? payload_len : sizeof(name_buf) - 1U;
+        memcpy(name_buf, payload, copy_len);
+        name_buf[copy_len] = '\0';
+        shader = dsl_shader_find(name_buf);
+    }
+
+    if (shader == NULL) {
+        ESP_LOGW(TAG, "native shader not found");
+        return FW_TCP_V3_STATUS_INVALID_ARG;
+    }
+
     if (state->state_lock == NULL || xSemaphoreTake(state->state_lock, portMAX_DELAY) != pdTRUE) {
         return FW_TCP_V3_STATUS_INTERNAL;
     }
 
     state->shader_active = true;
     state->shader_source = FW_TCP_SHADER_SOURCE_NATIVE;
+    state->active_native_shader = shader;
     state->native_shader_seed = fw_tcp_generate_seed();
     state->shader_slow_frame_count = 0U;
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
     state->uniform_last_color_valid = false;
     xSemaphoreGive(state->state_lock);
+
+    ESP_LOGI(TAG, "activated native shader: %s (folder: %s)", shader->name, shader->folder);
 
     /* Run micro-benchmarks when enabled (set FW_RUN_SHADER_BENCH=1 to enable). */
 #if defined(FW_RUN_SHADER_BENCH) && FW_RUN_SHADER_BENCH
@@ -847,11 +870,7 @@ static bool fw_tcp_handle_v3_message(int sock, fw_tcp_server_state_t *state, uin
             );
             break;
         case FW_TCP_V3_CMD_ACTIVATE_NATIVE_SHADER:
-            if (payload_len != 0U) {
-                status = FW_TCP_V3_STATUS_INVALID_ARG;
-            } else {
-                status = fw_tcp_handle_v3_activate_native(state);
-            }
+            status = fw_tcp_handle_v3_activate_native(state, payload, payload_len);
             break;
         case FW_TCP_V3_CMD_STOP_SHADER:
             if (payload_len != 0U) {
@@ -1239,6 +1258,11 @@ esp_err_t fw_tcp_server_start(const fw_led_layout_config_t *layout, uint16_t por
         return startup_err;
     }
     ESP_LOGI(TAG, "startup_sequence ok, heap: %" PRIu32, (uint32_t)esp_get_free_heap_size());
+
+    ESP_LOGI(TAG, "Shader registry: %d shaders available", dsl_shader_registry_count);
+    for (int i = 0; i < dsl_shader_registry_count; i++) {
+        ESP_LOGI(TAG, "  [%d] %s (folder: %s)", i, dsl_shader_registry[i].name, dsl_shader_registry[i].folder);
+    }
 
     esp_err_t default_shader_err = fw_tcp_load_persisted_default_shader(&g_fw_tcp_server);
     if (default_shader_err == ESP_OK) {

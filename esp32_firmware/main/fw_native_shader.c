@@ -1,12 +1,13 @@
-#include "fw_native_shader.h"
+// Include the registry .c inside math-redirect scope so all static shader
+// functions get fast-math substitutions.  The .c defines dsl_color_t,
+// dsl_vec2_t, and dsl_shader_entry_t, so we set the header include-guard
+// BEFORE pulling in fw_native_shader.h to avoid duplicate typedefs.
 #include <math.h>
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "fw_fast_math.h"
 
-static const char *BENCH_TAG = "shader_bench";
-
-// Redirect math calls inside the generated shader to fast versions.
+// Redirect math calls inside the generated shaders to fast versions.
 #define sinf   dsl_fast_sinf
 #define cosf   dsl_fast_cosf
 #define sqrtf  dsl_fast_sqrtf
@@ -17,7 +18,7 @@ static const char *BENCH_TAG = "shader_bench";
 // already emits single-instruction ABS.S / conditional-move for these,
 // making them faster than any wrapper function.
 
-#include "generated/dsl_shader_generated.c"
+#include "generated/dsl_shader_registry.c"
 
 #undef sinf
 #undef cosf
@@ -26,26 +27,15 @@ static const char *BENCH_TAG = "shader_bench";
 #undef logf
 #undef log10f
 
-void fw_native_shader_eval_pixel(
-    float time_seconds,
-    float frame_counter,
-    float x,
-    float y,
-    float width,
-    float height,
-    float seed,
-    fw_native_shader_color_t *out_color
-) {
-    if (out_color == 0) {
-        return;
-    }
-    dsl_color_t generated_color = {0};
-    dsl_shader_eval_pixel(time_seconds, frame_counter, x, y, width, height, seed, &generated_color);
-    out_color->r = generated_color.r;
-    out_color->g = generated_color.g;
-    out_color->b = generated_color.b;
-    out_color->a = generated_color.a;
-}
+// Types are already defined by the registry .c; prevent the registry header
+// (pulled in via fw_native_shader.h) from redefining them.
+#ifndef DSL_SHADER_REGISTRY_H
+#define DSL_SHADER_REGISTRY_H
+#endif
+
+#include "fw_native_shader.h"
+
+static const char *BENCH_TAG = "shader_bench";
 
 static inline uint8_t fw_native_channel_to_u8(float value) {
     if (value <= 0.0f) return 0U;
@@ -54,6 +44,7 @@ static inline uint8_t fw_native_channel_to_u8(float value) {
 }
 
 int __attribute__((flatten)) fw_native_shader_render_frame(
+    const dsl_shader_entry_t *shader,
     float time_seconds,
     float frame_counter,
     uint16_t width,
@@ -63,6 +54,10 @@ int __attribute__((flatten)) fw_native_shader_render_frame(
     uint8_t *frame_buffer,
     size_t buffer_len
 ) {
+    if (shader == NULL) {
+        return -1;
+    }
+
     const size_t bytes_per_pixel = 3U;
     const size_t required = (size_t)width * height * bytes_per_pixel;
     if (frame_buffer == 0 || buffer_len < required) {
@@ -72,10 +67,14 @@ int __attribute__((flatten)) fw_native_shader_render_frame(
     const float fw = (float)width;
     const float fh = (float)height;
 
+    if (shader->has_frame_func && shader->eval_frame != NULL) {
+        shader->eval_frame(time_seconds, frame_counter);
+    }
+
     for (uint16_t y = 0; y < height; y++) {
         for (uint16_t x = 0; x < width; x++) {
             dsl_color_t c = {0};
-            dsl_shader_eval_pixel(time_seconds, frame_counter, (float)x, (float)y, fw, fh, seed, &c);
+            shader->eval_pixel(time_seconds, frame_counter, (float)x, (float)y, fw, fh, seed, &c);
 
             uint16_t mapped_y = y;
             if (serpentine && ((x & 1U) != 0U)) {
