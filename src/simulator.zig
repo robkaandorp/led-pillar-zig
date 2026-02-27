@@ -20,16 +20,20 @@ const EmittedShaderColor = extern struct {
     a: f32,
 };
 
-extern fn dsl_shader_eval_pixel(
-    time_seconds: f32,
-    frame_counter: f32,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    seed: f32,
-    out_color: *EmittedShaderColor,
-) callconv(.c) void;
+const ShaderEvalPixelFn = *const fn (f32, f32, f32, f32, f32, f32, f32, *EmittedShaderColor) callconv(.c) void;
+const ShaderEvalFrameFn = *const fn (f32, f32) callconv(.c) void;
+
+const ShaderRegistryEntry = extern struct {
+    name: [*:0]const u8,
+    folder: [*:0]const u8,
+    eval_pixel: ShaderEvalPixelFn,
+    has_frame_func: c_int,
+    eval_frame: ?ShaderEvalFrameFn,
+};
+
+extern const dsl_shader_registry_count: c_int;
+extern fn dsl_shader_find(name: [*:0]const u8) ?*const ShaderRegistryEntry;
+extern fn dsl_shader_get(index: c_int) ?*const ShaderRegistryEntry;
 
 const ShaderSource = enum {
     none,
@@ -49,6 +53,7 @@ const V3State = struct {
     shader_frame_count: u32 = 0,
     shader_source: ShaderSource = .none,
     seed: f32 = 0.0,
+    active_shader: ?*const ShaderRegistryEntry = null,
 };
 
 const ShaderRenderContext = struct {
@@ -118,6 +123,15 @@ const SimulatorStats = struct {
 
 pub fn runServer(port: u16, width: u16, height: u16) !void {
     if (width == 0 or height == 0) return error.InvalidDimensions;
+
+    // Log available shaders from the registry
+    const count = @as(usize, @intCast(dsl_shader_registry_count));
+    std.debug.print("Shader registry: {d} shaders available\n", .{count});
+    for (0..count) |i| {
+        if (dsl_shader_get(@intCast(i))) |entry| {
+            std.debug.print("  [{d}] {s} (folder: {s})\n", .{ i, entry.name, entry.folder });
+        }
+    }
 
     const expected_pixels = try std.math.mul(u32, @as(u32, width), @as(u32, height));
     const frame_payload_len = try std.math.mul(usize, @as(usize, expected_pixels), 4);
@@ -224,11 +238,11 @@ fn handleV3Message(stream: *std.net.Stream, state: *V3State, cmd: u8, payload: [
     var response_len: usize = 0;
     const status = switch (cmd) {
         v3_cmd_upload_bytecode => handleV3Upload(state, payload),
-        v3_cmd_activate_shader => if (payload.len == 0) handleV3Activate(state, .bytecode) else v3_status_invalid_arg,
+        v3_cmd_activate_shader => if (payload.len == 0) handleV3Activate(state, .bytecode, null) else v3_status_invalid_arg,
         v3_cmd_set_default_hook => handleV3SetHook(state, payload),
         v3_cmd_clear_default_hook => handleV3ClearHook(state, payload),
         v3_cmd_query_default_hook => handleV3Query(state, payload, response_payload[0..], &response_len),
-        v3_cmd_activate_native_shader => if (payload.len == 0) handleV3Activate(state, .native) else v3_status_invalid_arg,
+        v3_cmd_activate_native_shader => handleV3ActivateNative(state, payload),
         v3_cmd_stop_shader => handleV3Stop(state, payload),
         v3_cmd_upload_firmware => v3_status_unsupported_cmd,
         else => v3_status_unsupported_cmd,
@@ -250,7 +264,31 @@ fn handleV3Upload(state: *V3State, payload: []const u8) u8 {
     return v3_status_ok;
 }
 
-fn handleV3Activate(state: *V3State, source: ShaderSource) u8 {
+fn handleV3ActivateNative(state: *V3State, payload: []const u8) u8 {
+    if (payload.len == 0) {
+        // No name: activate first shader
+        const first = dsl_shader_get(0) orelse return v3_status_not_ready;
+        return handleV3Activate(state, .native, first);
+    }
+    // Payload contains a null-terminated shader name
+    const name_end = std.mem.indexOfScalar(u8, payload, 0) orelse payload.len;
+    if (name_end == 0) {
+        const first = dsl_shader_get(0) orelse return v3_status_not_ready;
+        return handleV3Activate(state, .native, first);
+    }
+
+    // Build null-terminated name on the stack
+    if (name_end > 255) return v3_status_invalid_arg;
+    var name_buf: [256]u8 = undefined;
+    @memcpy(name_buf[0..name_end], payload[0..name_end]);
+    name_buf[name_end] = 0;
+    const name_z: [*:0]const u8 = @ptrCast(&name_buf);
+
+    const entry = dsl_shader_find(name_z) orelse return v3_status_invalid_arg;
+    return handleV3Activate(state, .native, entry);
+}
+
+fn handleV3Activate(state: *V3State, source: ShaderSource, shader: ?*const ShaderRegistryEntry) u8 {
     state.lock.lock();
     defer state.lock.unlock();
     if (source == .bytecode and !state.has_uploaded_program) return v3_status_not_ready;
@@ -260,6 +298,9 @@ fn handleV3Activate(state: *V3State, source: ShaderSource) u8 {
     state.shader_slow_frame_count = 0;
     state.shader_last_slow_frame_ms = 0;
     state.shader_frame_count = 0;
+    if (source == .native) {
+        state.active_shader = shader;
+    }
     return v3_status_ok;
 }
 
@@ -347,6 +388,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
 
         var should_render = false;
         var current_seed: f32 = 0.0;
+        var current_shader: ?*const ShaderRegistryEntry = null;
         {
             context.state.lock.lock();
             defer context.state.lock.unlock();
@@ -356,6 +398,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
                 context.state.shader_frame_count = 0;
             } else {
                 current_seed = context.state.seed;
+                current_shader = context.state.active_shader;
             }
         }
 
@@ -363,15 +406,22 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
             if (!was_rendering) {
                 clear_screen = true;
             }
-            const time_seconds: f32 = @floatCast(@as(f64, @floatFromInt(frame_start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
-            renderEmittedShaderFrame(
-                context.width,
-                context.height,
-                time_seconds,
-                frame_counter,
-                current_seed,
-                context.payload,
-            );
+            const eval_pixel: ?ShaderEvalPixelFn = if (current_shader) |s| s.eval_pixel else blk: {
+                if (dsl_shader_get(0)) |first| break :blk first.eval_pixel;
+                break :blk null;
+            };
+            if (eval_pixel) |pixel_fn| {
+                const time_seconds: f32 = @floatCast(@as(f64, @floatFromInt(frame_start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
+                renderEmittedShaderFrame(
+                    context.width,
+                    context.height,
+                    time_seconds,
+                    frame_counter,
+                    current_seed,
+                    context.payload,
+                    pixel_fn,
+                );
+            }
             stats.recordFrame(tcp_client.header_len + context.payload.len);
 
             context.render_lock.lock();
@@ -432,7 +482,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
     }
 }
 
-fn renderEmittedShaderFrame(width: u16, height: u16, time_seconds: f32, frame_counter: u32, seed: f32, payload: []u8) void {
+fn renderEmittedShaderFrame(width: u16, height: u16, time_seconds: f32, frame_counter: u32, seed: f32, payload: []u8, eval_pixel: ShaderEvalPixelFn) void {
     const pixel_count = @as(usize, width) * @as(usize, height);
     const required_len = pixel_count * 3;
     if (payload.len < required_len) return;
@@ -445,7 +495,7 @@ fn renderEmittedShaderFrame(width: u16, height: u16, time_seconds: f32, frame_co
         var x: u16 = 0;
         while (x < width) : (x += 1) {
             var color = EmittedShaderColor{ .r = 0, .g = 0, .b = 0, .a = 0 };
-            dsl_shader_eval_pixel(
+            eval_pixel(
                 time_seconds,
                 frame_f,
                 @floatFromInt(x),
@@ -641,7 +691,7 @@ test "v3 upload requires non-empty payload" {
 
 test "v3 bytecode activate requires upload first" {
     var state = V3State{};
-    try std.testing.expectEqual(v3_status_not_ready, handleV3Activate(&state, .bytecode));
+    try std.testing.expectEqual(v3_status_not_ready, handleV3Activate(&state, .bytecode, null));
 }
 
 test "v3 stop deactivates shader state" {

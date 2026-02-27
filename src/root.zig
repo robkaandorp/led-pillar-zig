@@ -5,6 +5,7 @@ pub const sdf_common = @import("sdf_common.zig");
 pub const dsl_parser = @import("dsl_parser.zig");
 pub const dsl_runtime = @import("dsl_runtime.zig");
 pub const dsl_c_emitter = @import("dsl_c_emitter.zig");
+pub const build_shader_registry = @import("build_shader_registry.zig");
 
 pub const display_height: u16 = tcp_client.default_display_height;
 pub const display_width: u16 = tcp_client.default_display_width;
@@ -24,4 +25,5 @@ test {
     _ = @import("dsl_parser.zig");
     _ = @import("dsl_runtime.zig");
     _ = @import("dsl_c_emitter.zig");
+    _ = @import("build_shader_registry.zig");
 }

@@ -91,47 +91,17 @@ static inline dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {
         .a = out_a,
     };
 }
-
-/* Generated from effect: infinite_lines */
-void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {    const float dsl_param_line_half_width_0 = 0.700000f;
-    const float dsl_param_rotation_speed_1 = 0.350000f;
-    const float dsl_param_color_speed_2 = 0.100000f;
-    const float dsl_let_t_3 = (time * dsl_param_rotation_speed_1);
-    const float dsl_let_tc_4 = (time * dsl_param_color_speed_2);
+/* Generated from effect: aurora_v1 */
+void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_speed_0 = 0.280000f;
+    const float dsl_param_thickness_1 = 3.800000f;
+    const float dsl_param_alpha_scale_2 = 0.450000f;
     dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
-    /* layer lines */
-    const float dsl_let_theta_5 = ((x / width) * 6.28318530717958647692f);
-    for (int32_t dsl_iter_i_6 = 0; dsl_iter_i_6 < 4; dsl_iter_i_6++) {
-        const float dsl_index_i_7 = (float)dsl_iter_i_6;
-        const float dsl_let_phase_8 = ((seed * 6.28318530717958647692f) + (dsl_index_i_7 * 1.700000f));
-        const float dsl_let_pivot_frac_y_9 = dsl_fract((seed * (3.170000f + (dsl_index_i_7 * 2.310000f))));
-        const float dsl_let_pivot_y_10 = (dsl_let_pivot_frac_y_9 * height);
-        const float dsl_let_dir_sign_11 = ((floorf((dsl_fract((seed * (7.130000f + (dsl_index_i_7 * 1.930000f)))) + 0.500000f)) * 2.000000f) - 1.000000f);
-        const float dsl_let_speed_var_12 = (0.700000f + (dsl_fract((seed * (5.410000f + (dsl_index_i_7 * 3.070000f)))) * 0.600000f));
-        const float dsl_let_angle_13 = (dsl_let_phase_8 + ((dsl_let_t_3 * dsl_let_dir_sign_11) * dsl_let_speed_var_12));
-        const float dsl_let_nx_14 = (-(sinf(dsl_let_angle_13)));
-        const float dsl_let_ny_15 = cosf(dsl_let_angle_13);
-        const float dsl_let_pivot_theta_16 = (dsl_fract((seed * (1.730000f + (dsl_index_i_7 * 4.190000f)))) * 6.28318530717958647692f);
-        const float dsl_let_pivot_x_norm_17 = ((dsl_let_pivot_theta_16 / 6.28318530717958647692f) * width);
-        const float dsl_let_rel_x_18 = (x - dsl_let_pivot_x_norm_17);
-        const float dsl_let_rel_y_19 = (y - dsl_let_pivot_y_10);
-        const float dsl_let_base_proj_20 = ((dsl_let_rel_x_18 * dsl_let_nx_14) + (dsl_let_rel_y_19 * dsl_let_ny_15));
-        const float dsl_let_wrap_step_21 = (width * dsl_let_nx_14);
-        const float dsl_let_d_center_22 = fabsf(dsl_let_base_proj_20);
-        const float dsl_let_d_left_23 = fabsf((dsl_let_base_proj_20 - dsl_let_wrap_step_21));
-        const float dsl_let_d_right_24 = fabsf((dsl_let_base_proj_20 + dsl_let_wrap_step_21));
-        const float dsl_let_d_25 = fminf(dsl_let_d_center_22, fminf(dsl_let_d_left_23, dsl_let_d_right_24));
-        const float dsl_let_line_alpha_26 = (1.000000f - dsl_smoothstep((dsl_param_line_half_width_0 * 0.300000f), dsl_param_line_half_width_0, dsl_let_d_25));
-        const float dsl_let_hue_phase_27 = ((dsl_let_tc_4 * (0.800000f + (dsl_index_i_7 * 0.300000f))) + (seed * (2.000000f + (dsl_index_i_7 * 1.500000f))));
-        const float dsl_let_r_28 = (0.500000f + (0.500000f * sinf(dsl_let_hue_phase_27)));
-        const float dsl_let_g_29 = (0.500000f + (0.500000f * sinf((dsl_let_hue_phase_27 + 2.094000f))));
-        const float dsl_let_b_30 = (0.500000f + (0.500000f * sinf((dsl_let_hue_phase_27 + 4.189000f))));
-        const float dsl_let_max_ch_31 = fmaxf(dsl_let_r_28, fmaxf(dsl_let_g_29, dsl_let_b_30));
-        const float dsl_let_boost_32 = dsl_clamp((0.850000f / fmaxf(dsl_let_max_ch_31, 0.010000f)), 1.000000f, 2.000000f);
-        const float dsl_let_rb_33 = dsl_clamp((dsl_let_r_28 * dsl_let_boost_32), 0.000000f, 1.000000f);
-        const float dsl_let_gb_34 = dsl_clamp((dsl_let_g_29 * dsl_let_boost_32), 0.000000f, 1.000000f);
-        const float dsl_let_bb_35 = dsl_clamp((dsl_let_b_30 * dsl_let_boost_32), 0.000000f, 1.000000f);
-        __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_rb_33, .g = dsl_let_gb_34, .b = dsl_let_bb_35, .a = dsl_let_line_alpha_26 }, __dsl_out);
-    }
+    /* layer ribbon */
+    const float dsl_let_theta_3 = ((x / width) * 6.28318530717958647692f);
+    const float dsl_let_center_4 = ((height * 0.500000f) + (sinf((dsl_let_theta_3 + (time * dsl_param_speed_0))) * 6.000000f));
+    const float dsl_let_d_5 = dsl_box((dsl_vec2_t){ .x = 0.000000f, .y = (y - dsl_let_center_4) }, (dsl_vec2_t){ .x = width, .y = dsl_param_thickness_1 });
+    const float dsl_let_a_6 = ((1.000000f - dsl_smoothstep(0.000000f, 1.900000f, dsl_let_d_5)) * dsl_param_alpha_scale_2);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.350000f, .g = 0.950000f, .b = 0.750000f, .a = fminf(dsl_let_a_6, 1.000000f) }, __dsl_out);
     *out_color = __dsl_out;
 }

@@ -34,11 +34,8 @@ const Scope = struct {
     }
 };
 
-pub fn writeProgramC(allocator: std.mem.Allocator, writer: anytype, program: dsl_parser.Program) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const temp_allocator = arena.allocator();
-
+/// Emit the common C preamble (types, inline helpers). Call once at the top of a combined file.
+pub fn writePreambleC(writer: anytype) !void {
     try writer.print(
         \\#include <math.h>
         \\#include <stdint.h>
@@ -134,11 +131,76 @@ pub fn writeProgramC(allocator: std.mem.Allocator, writer: anytype, program: dsl
         \\    }};
         \\}}
         \\
-        \\/* Generated from effect: {s} */
-        \\void dsl_shader_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {{
         ,
-        .{program.effect_name},
+        .{},
     );
+}
+
+/// Emit a standalone single-shader C file (preamble + shader functions). Backward compatible.
+pub fn writeProgramC(allocator: std.mem.Allocator, writer: anytype, program: dsl_parser.Program) !void {
+    try writePreambleC(writer);
+    try writeShaderFunctions(allocator, writer, program, null);
+}
+
+/// Emit shader functions with a prefix. When prefix is non-null, functions are
+/// marked `static` and named `{prefix}_eval_pixel` / `{prefix}_eval_frame`.
+pub fn writeShaderFunctions(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    program: dsl_parser.Program,
+    prefix: ?[]const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const temp_allocator = arena.allocator();
+
+    const is_prefixed = prefix != null;
+    const static_kw: []const u8 = if (is_prefixed) "static " else "";
+
+    // Emit eval_frame if the program has frame statements
+    if (program.frame_statements.len > 0) {
+        const frame_fn_name = if (prefix) |p|
+            try std.fmt.allocPrint(temp_allocator, "{s}_eval_frame", .{p})
+        else
+            try std.fmt.allocPrint(temp_allocator, "dsl_shader_eval_frame", .{});
+
+        try writer.print(
+            \\/* Generated from effect: {s} */
+            \\{s}void {s}(float time, float frame) {{
+            \\
+        , .{ program.effect_name, static_kw, frame_fn_name });
+
+        var name_counter: usize = 0;
+        var frame_scope = Scope.init(temp_allocator, null);
+        defer frame_scope.deinit();
+        try frame_scope.put("time", .{ .c_name = "time", .value_type = .scalar });
+        try frame_scope.put("frame", .{ .c_name = "frame", .value_type = .scalar });
+
+        for (program.params) |param| {
+            const param_type = try inferExprType(param.value, &frame_scope);
+            const c_name = try makeName(temp_allocator, "dsl_param", param.name, &name_counter);
+            try writeIndent(writer, 1);
+            try writer.print("const {s} {s} = ", .{ cTypeName(param_type), c_name });
+            try emitExpr(writer, param.value, &frame_scope);
+            try writer.writeAll(";\n");
+            try frame_scope.put(param.name, .{ .c_name = c_name, .value_type = param_type });
+        }
+
+        try emitStatements(writer, temp_allocator, &name_counter, &frame_scope, program.frame_statements, false, "__dsl_out", 1);
+        try writer.writeAll("}\n\n");
+    }
+
+    // Emit eval_pixel
+    const pixel_fn_name = if (prefix) |p|
+        try std.fmt.allocPrint(temp_allocator, "{s}_eval_pixel", .{p})
+    else
+        try std.fmt.allocPrint(temp_allocator, "dsl_shader_eval_pixel", .{});
+
+    try writer.print(
+        \\/* Generated from effect: {s} */
+        \\{s}void {s}(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {{
+        \\
+    , .{ program.effect_name, static_kw, pixel_fn_name });
 
     var name_counter: usize = 0;
     var root_scope = Scope.init(temp_allocator, null);
@@ -455,5 +517,47 @@ test "writeProgramC emits compilable-shaped C source" {
     try writeProgramC(std.testing.allocator, writer, program);
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "void dsl_shader_eval_pixel") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "dsl_blend_over") != null);
+}
+
+test "writeShaderFunctions emits prefixed static functions" {
+    const source =
+        \\effect emit_test
+        \\param speed = 0.5
+        \\frame {
+        \\  let t = time * speed
+        \\}
+        \\layer l {
+        \\  let p = vec2(x, y)
+        \\  let d = circle(p, 2.0)
+        \\  let a = 1.0 - smoothstep(0.0, 1.0, d)
+        \\  blend rgba(1.0, 0.0, 0.0, a)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const program = try dsl_parser.parseAndValidate(arena.allocator(), source);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    const writer = out.writer(std.testing.allocator);
+    try writeShaderFunctions(std.testing.allocator, writer, program, "my_shader");
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "static void my_shader_eval_pixel") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "static void my_shader_eval_frame") != null);
+    // Should NOT contain the preamble types
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "typedef struct") == null);
+}
+
+test "writePreambleC emits type definitions" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    const writer = out.writer(std.testing.allocator);
+    try writePreambleC(writer);
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "dsl_vec2_t") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "dsl_color_t") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "dsl_blend_over") != null);
 }

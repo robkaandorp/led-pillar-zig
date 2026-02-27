@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
     });
     simulator_exe.linkLibC();
     simulator_exe.addCSourceFile(.{
-        .file = b.path("esp32_firmware/main/generated/dsl_shader_generated.c"),
+        .file = b.path("esp32_firmware/main/generated/dsl_shader_registry.c"),
         .flags = &.{
             "-O3",
             "-ffast-math",
@@ -113,6 +113,23 @@ pub fn build(b: *std.Build) void {
         simulator_exe.linkSystemLibrary("m");
     }
     b.installArtifact(simulator_exe);
+
+    // Build-time tool: generate the shader registry C file from DSL sources
+    const gen_registry_exe = b.addExecutable(.{
+        .name = "gen_shader_registry",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_registry_main.zig"),
+            .target = b.graph.host,
+            .imports = &.{
+                .{ .name = "led_pillar_zig", .module = mod },
+            },
+        }),
+    });
+    const gen_registry_cmd = b.addRunArtifact(gen_registry_exe);
+    gen_registry_cmd.setCwd(b.path("."));
+    gen_registry_cmd.addArgs(&.{ "examples/dsl/v1", "esp32_firmware/main/generated" });
+    // Simulator compilation depends on the generated C file
+    simulator_exe.step.dependOn(&gen_registry_cmd.step);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
