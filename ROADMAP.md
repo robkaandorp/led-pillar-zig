@@ -114,12 +114,15 @@ The `top` command currently shows hardcoded `FPS: 40.0`. When debugging shader p
 2. Compute a rolling average FPS (e.g., exponential moving average over last ~40 frames)
 3. Store the computed FPS in `fw_tcp_server_state_t`
 4. Update telnet `top` and v3 telemetry to report the measured value
+5. Make `top` a live-updating display: refresh the output every ~1 second until the user presses any key, then return to the prompt (similar to Unix `top` behavior)
 
 ### Verification Goals
 
 1. `top` shows actual FPS that varies slightly around 40.0
 2. A computationally heavy shader shows lower FPS in `top`
 3. Shader render performance is not affected by the measurement overhead
+4. `top` refreshes automatically every ~1 second with updated stats
+5. Pressing any key exits `top` and returns to the shell prompt cleanly
 
 ---
 
