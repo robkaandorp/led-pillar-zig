@@ -9,7 +9,7 @@
 
 #define FW_BC3_INPUT_SLOT_COUNT 7U
 #define FW_BC3_MAX_CALL_ARGS 8U
-#define FW_BC3_BUILTIN_COUNT 20U
+#define FW_BC3_BUILTIN_COUNT 23U
 
 typedef enum {
     FW_BC3_OP_PUSH_LITERAL = 1,
@@ -20,6 +20,7 @@ typedef enum {
     FW_BC3_OP_MUL = 6,
     FW_BC3_OP_DIV = 7,
     FW_BC3_OP_CALL_BUILTIN = 8,
+    FW_BC3_OP_MOD = 9,
 } fw_bc3_expr_opcode_t;
 
 typedef enum {
@@ -40,27 +41,32 @@ typedef enum {
     FW_BC3_DOP_SUB = 7,
     FW_BC3_DOP_MUL = 8,
     FW_BC3_DOP_DIV = 9,
-    FW_BC3_DOP_CALL_BUILTIN = 10,
+    FW_BC3_DOP_MOD = 10,
+    FW_BC3_DOP_CALL_BUILTIN = 11,
     // Inlined builtins (1-arg scalar -> scalar)
-    FW_BC3_DOP_BUILTIN_SIN = 11,
-    FW_BC3_DOP_BUILTIN_COS = 12,
-    FW_BC3_DOP_BUILTIN_SQRT = 13,
-    FW_BC3_DOP_BUILTIN_ABS = 14,
-    FW_BC3_DOP_BUILTIN_FLOOR = 15,
-    FW_BC3_DOP_BUILTIN_FRACT = 16,
-    FW_BC3_DOP_BUILTIN_LN = 17,
-    FW_BC3_DOP_BUILTIN_LOG = 18,
+    FW_BC3_DOP_BUILTIN_SIN = 12,
+    FW_BC3_DOP_BUILTIN_COS = 13,
+    FW_BC3_DOP_BUILTIN_SQRT = 14,
+    FW_BC3_DOP_BUILTIN_ABS = 15,
+    FW_BC3_DOP_BUILTIN_FLOOR = 16,
+    FW_BC3_DOP_BUILTIN_FRACT = 17,
+    FW_BC3_DOP_BUILTIN_LN = 18,
+    FW_BC3_DOP_BUILTIN_LOG = 19,
     // Inlined builtins (2-arg scalar -> scalar)
-    FW_BC3_DOP_BUILTIN_MIN = 19,
-    FW_BC3_DOP_BUILTIN_MAX = 20,
+    FW_BC3_DOP_BUILTIN_MIN = 20,
+    FW_BC3_DOP_BUILTIN_MAX = 21,
     // Inlined builtins (3-arg scalar -> scalar)
-    FW_BC3_DOP_BUILTIN_CLAMP = 21,
-    FW_BC3_DOP_BUILTIN_SMOOTHSTEP = 22,
+    FW_BC3_DOP_BUILTIN_CLAMP = 22,
+    FW_BC3_DOP_BUILTIN_SMOOTHSTEP = 23,
+    // Inlined builtins (pow, noise)
+    FW_BC3_DOP_BUILTIN_POW = 24,
+    FW_BC3_DOP_BUILTIN_NOISE = 25,
+    FW_BC3_DOP_BUILTIN_NOISE3 = 26,
     // Inlined type constructors
-    FW_BC3_DOP_BUILTIN_VEC2 = 23,
-    FW_BC3_DOP_BUILTIN_RGBA = 24,
+    FW_BC3_DOP_BUILTIN_VEC2 = 27,
+    FW_BC3_DOP_BUILTIN_RGBA = 28,
     // Sentinel: terminates computed-goto dispatch
-    FW_BC3_DOP_HALT = 25,
+    FW_BC3_DOP_HALT = 29,
 } fw_bc3_decoded_opcode_t;
 
 typedef enum {
@@ -92,8 +98,11 @@ typedef enum {
     FW_BC3_BUILTIN_HASH01 = 15,
     FW_BC3_BUILTIN_HASH_SIGNED = 16,
     FW_BC3_BUILTIN_HASH_COORDS01 = 17,
-    FW_BC3_BUILTIN_VEC2 = 18,
-    FW_BC3_BUILTIN_RGBA = 19,
+    FW_BC3_BUILTIN_POW = 18,
+    FW_BC3_BUILTIN_NOISE = 19,
+    FW_BC3_BUILTIN_NOISE3 = 20,
+    FW_BC3_BUILTIN_VEC2 = 21,
+    FW_BC3_BUILTIN_RGBA = 22,
 } fw_bc3_builtin_id_t;
 
 typedef struct {
@@ -351,7 +360,7 @@ static fw_bc3_status_t fw_bc3_parse_expression(fw_bc3_program_t *program, fw_bc3
             if (stack_depth < 1) {
                 return FW_BC3_ERR_STACK_UNDERFLOW;
             }
-        } else if (opcode == FW_BC3_OP_ADD || opcode == FW_BC3_OP_SUB || opcode == FW_BC3_OP_MUL || opcode == FW_BC3_OP_DIV) {
+        } else if (opcode == FW_BC3_OP_ADD || opcode == FW_BC3_OP_SUB || opcode == FW_BC3_OP_MUL || opcode == FW_BC3_OP_DIV || opcode == FW_BC3_OP_MOD) {
             if (stack_depth < 2) {
                 return FW_BC3_ERR_STACK_UNDERFLOW;
             }
@@ -553,6 +562,8 @@ static fw_bc3_status_t fw_bc3_parse_expression(fw_bc3_program_t *program, fw_bc3
                 dop->op = (uint8_t)FW_BC3_DOP_MUL;
             } else if (opcode == FW_BC3_OP_DIV) {
                 dop->op = (uint8_t)FW_BC3_DOP_DIV;
+            } else if (opcode == FW_BC3_OP_MOD) {
+                dop->op = (uint8_t)FW_BC3_DOP_MOD;
             } else if (opcode == FW_BC3_OP_CALL_BUILTIN) {
                 uint8_t builtin = 0;
                 uint8_t arg_count = 0;
@@ -600,6 +611,15 @@ static fw_bc3_status_t fw_bc3_parse_expression(fw_bc3_program_t *program, fw_bc3
                         break;
                     case FW_BC3_BUILTIN_SMOOTHSTEP:
                         dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_SMOOTHSTEP;
+                        break;
+                    case FW_BC3_BUILTIN_POW:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_POW;
+                        break;
+                    case FW_BC3_BUILTIN_NOISE:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_NOISE;
+                        break;
+                    case FW_BC3_BUILTIN_NOISE3:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_NOISE3;
                         break;
                     case FW_BC3_BUILTIN_VEC2:
                         dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_VEC2;
@@ -1165,6 +1185,129 @@ static float fw_bc3_fast_cos(float x) {
     return dsl_fast_cosf(x);
 }
 
+// --- Simplex noise (matches dsl_c_emitter.zig preamble) ---
+
+static const unsigned char fw_bc3_noise_perm[512] = {
+    151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
+    140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,
+    247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,
+    57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,
+    74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,
+    60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,
+    65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,
+    200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,
+    52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,
+    207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,
+    119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,
+    129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,
+    218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,
+    81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,
+    184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,
+    222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180,
+    151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
+    140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,
+    247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,
+    57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,
+    74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,
+    60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,
+    65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,
+    200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,
+    52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,
+    207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,
+    119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,
+    129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,
+    218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,
+    81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,
+    184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,
+    222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180,
+};
+
+static inline float fw_bc3_grad2(int hash, float x, float y) {
+    const int h = hash & 7;
+    const float u = h < 4 ? x : y;
+    const float v = h < 4 ? y : x;
+    return ((h & 1) ? -u : u) + ((h & 2) ? -2.0f * v : 2.0f * v);
+}
+
+static inline float fw_bc3_noise2(float x, float y) {
+    const float F2 = 0.3660254037844386f;
+    const float G2 = 0.21132486540518713f;
+    const float s = (x + y) * F2;
+    const int i = (int)floorf(x + s);
+    const int j = (int)floorf(y + s);
+    const float t = (float)(i + j) * G2;
+    const float x0 = x - ((float)i - t);
+    const float y0 = y - ((float)j - t);
+    int i1, j1;
+    if (x0 > y0) { i1 = 1; j1 = 0; } else { i1 = 0; j1 = 1; }
+    const float x1 = x0 - (float)i1 + G2;
+    const float y1 = y0 - (float)j1 + G2;
+    const float x2 = x0 - 1.0f + 2.0f * G2;
+    const float y2 = y0 - 1.0f + 2.0f * G2;
+    const int ii = i & 255;
+    const int jj = j & 255;
+    float n = 0.0f;
+    float t0 = 0.5f - x0*x0 - y0*y0;
+    if (t0 >= 0.0f) { t0 *= t0; n += t0 * t0 * fw_bc3_grad2(fw_bc3_noise_perm[ii + fw_bc3_noise_perm[jj]], x0, y0); }
+    float t1 = 0.5f - x1*x1 - y1*y1;
+    if (t1 >= 0.0f) { t1 *= t1; n += t1 * t1 * fw_bc3_grad2(fw_bc3_noise_perm[ii + i1 + fw_bc3_noise_perm[jj + j1]], x1, y1); }
+    float t2 = 0.5f - x2*x2 - y2*y2;
+    if (t2 >= 0.0f) { t2 *= t2; n += t2 * t2 * fw_bc3_grad2(fw_bc3_noise_perm[ii + 1 + fw_bc3_noise_perm[jj + 1]], x2, y2); }
+    return 70.0f * n;
+}
+
+static inline float fw_bc3_grad3(int hash, float x, float y, float z) {
+    const int h = hash & 15;
+    const float u = h < 8 ? x : y;
+    const float v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+    return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+}
+
+static inline float fw_bc3_noise3(float x, float y, float z) {
+    const float F3 = 1.0f / 3.0f;
+    const float G3 = 1.0f / 6.0f;
+    const float s = (x + y + z) * F3;
+    const int i = (int)floorf(x + s);
+    const int j = (int)floorf(y + s);
+    const int k = (int)floorf(z + s);
+    const float t = (float)(i + j + k) * G3;
+    const float x0 = x - ((float)i - t);
+    const float y0 = y - ((float)j - t);
+    const float z0 = z - ((float)k - t);
+    int i1, j1, k1, i2, j2, k2;
+    if (x0 >= y0) {
+        if (y0 >= z0) { i1=1;j1=0;k1=0;i2=1;j2=1;k2=0; }
+        else if (x0 >= z0) { i1=1;j1=0;k1=0;i2=1;j2=0;k2=1; }
+        else { i1=0;j1=0;k1=1;i2=1;j2=0;k2=1; }
+    } else {
+        if (y0 < z0) { i1=0;j1=0;k1=1;i2=0;j2=1;k2=1; }
+        else if (x0 < z0) { i1=0;j1=1;k1=0;i2=0;j2=1;k2=1; }
+        else { i1=0;j1=1;k1=0;i2=1;j2=1;k2=0; }
+    }
+    const float x1 = x0 - (float)i1 + G3;
+    const float y1 = y0 - (float)j1 + G3;
+    const float z1 = z0 - (float)k1 + G3;
+    const float x2 = x0 - (float)i2 + 2.0f*G3;
+    const float y2 = y0 - (float)j2 + 2.0f*G3;
+    const float z2 = z0 - (float)k2 + 2.0f*G3;
+    const float x3 = x0 - 1.0f + 3.0f*G3;
+    const float y3 = y0 - 1.0f + 3.0f*G3;
+    const float z3 = z0 - 1.0f + 3.0f*G3;
+    const int ii = i & 255;
+    const int jj = j & 255;
+    const int kk = k & 255;
+    float n = 0.0f;
+    float c0 = 0.6f - x0*x0 - y0*y0 - z0*z0;
+    if (c0 >= 0.0f) { c0 *= c0; n += c0*c0*fw_bc3_grad3(fw_bc3_noise_perm[ii+fw_bc3_noise_perm[jj+fw_bc3_noise_perm[kk]]], x0, y0, z0); }
+    float c1 = 0.6f - x1*x1 - y1*y1 - z1*z1;
+    if (c1 >= 0.0f) { c1 *= c1; n += c1*c1*fw_bc3_grad3(fw_bc3_noise_perm[ii+i1+fw_bc3_noise_perm[jj+j1+fw_bc3_noise_perm[kk+k1]]], x1, y1, z1); }
+    float c2 = 0.6f - x2*x2 - y2*y2 - z2*z2;
+    if (c2 >= 0.0f) { c2 *= c2; n += c2*c2*fw_bc3_grad3(fw_bc3_noise_perm[ii+i2+fw_bc3_noise_perm[jj+j2+fw_bc3_noise_perm[kk+k2]]], x2, y2, z2); }
+    float c3 = 0.6f - x3*x3 - y3*y3 - z3*z3;
+    if (c3 >= 0.0f) { c3 *= c3; n += c3*c3*fw_bc3_grad3(fw_bc3_noise_perm[ii+1+fw_bc3_noise_perm[jj+1+fw_bc3_noise_perm[kk+1]]], x3, y3, z3); }
+    return 32.0f * n;
+}
+
 static fw_bc3_color_t fw_bc3_color_clamped(fw_bc3_color_t color) {
     fw_bc3_color_t out = color;
     out.r = fw_bc3_clamp01(out.r);
@@ -1471,6 +1614,52 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
                 fw_bc3_hash_coords01(fw_bc3_scalar_to_i32(a0), fw_bc3_scalar_to_i32(a1), fw_bc3_scalar_to_u32(a2))
             );
             return FW_BC3_OK;
+        case FW_BC3_BUILTIN_POW:
+            if (arg_count != 2U) {
+                return FW_BC3_ERR_FORMAT;
+            }
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            status = fw_bc3_value_as_scalar(&args[1], &a1);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            *out = fw_bc3_make_scalar(powf(a0, a1));
+            return FW_BC3_OK;
+        case FW_BC3_BUILTIN_NOISE:
+            if (arg_count != 2U) {
+                return FW_BC3_ERR_FORMAT;
+            }
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            status = fw_bc3_value_as_scalar(&args[1], &a1);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            *out = fw_bc3_make_scalar(fw_bc3_noise2(a0, a1));
+            return FW_BC3_OK;
+        case FW_BC3_BUILTIN_NOISE3:
+            if (arg_count != 3U) {
+                return FW_BC3_ERR_FORMAT;
+            }
+            status = fw_bc3_value_as_scalar(&args[0], &a0);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            status = fw_bc3_value_as_scalar(&args[1], &a1);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            status = fw_bc3_value_as_scalar(&args[2], &a2);
+            if (status != FW_BC3_OK) {
+                return status;
+            }
+            *out = fw_bc3_make_scalar(fw_bc3_noise3(a0, a1, a2));
+            return FW_BC3_OK;
         case FW_BC3_BUILTIN_VEC2:
             if (arg_count != 2U) {
                 return FW_BC3_ERR_FORMAT;
@@ -1547,7 +1736,7 @@ static fw_bc3_status_t __attribute__((flatten)) IRAM_ATTR fw_bc3_eval_expression
     fw_bc3_value_t *stack = runtime->expr_stack;
     uint16_t sp = 0;
 
-    // Computed-goto dispatch table — contiguous enum values 0..25 for a compact jump table.
+    // Computed-goto dispatch table — contiguous enum values 0..29 for a compact jump table.
     static const void *dispatch_table[] = {
         [FW_BC3_DOP_PUSH_SCALAR_LIT] = &&dop_push_scalar_lit,
         [FW_BC3_DOP_PUSH_INPUT]      = &&dop_push_input,
@@ -1559,6 +1748,7 @@ static fw_bc3_status_t __attribute__((flatten)) IRAM_ATTR fw_bc3_eval_expression
         [FW_BC3_DOP_SUB]             = &&dop_sub,
         [FW_BC3_DOP_MUL]             = &&dop_mul,
         [FW_BC3_DOP_DIV]             = &&dop_div,
+        [FW_BC3_DOP_MOD]             = &&dop_mod,
         [FW_BC3_DOP_CALL_BUILTIN]    = &&dop_call_builtin,
         [FW_BC3_DOP_BUILTIN_SIN]     = &&dop_sin,
         [FW_BC3_DOP_BUILTIN_COS]     = &&dop_cos,
@@ -1572,6 +1762,9 @@ static fw_bc3_status_t __attribute__((flatten)) IRAM_ATTR fw_bc3_eval_expression
         [FW_BC3_DOP_BUILTIN_MAX]     = &&dop_max,
         [FW_BC3_DOP_BUILTIN_CLAMP]   = &&dop_clamp,
         [FW_BC3_DOP_BUILTIN_SMOOTHSTEP] = &&dop_smoothstep,
+        [FW_BC3_DOP_BUILTIN_POW]     = &&dop_pow,
+        [FW_BC3_DOP_BUILTIN_NOISE]   = &&dop_noise,
+        [FW_BC3_DOP_BUILTIN_NOISE3]  = &&dop_noise3,
         [FW_BC3_DOP_BUILTIN_VEC2]    = &&dop_vec2,
         [FW_BC3_DOP_BUILTIN_RGBA]    = &&dop_rgba,
         [FW_BC3_DOP_HALT]            = &&dop_halt,
@@ -1626,6 +1819,13 @@ dop_div: {
     float rhs = stack[sp - 1].as.scalar;
     float lhs = stack[sp - 2].as.scalar;
     stack[sp - 2].as.scalar = (rhs != 0.0f) ? (lhs / rhs) : ((lhs >= 0.0f) ? FLT_MAX : -FLT_MAX);
+    sp--;
+    NEXT();
+}
+dop_mod: {
+    float rhs = stack[sp - 1].as.scalar;
+    float lhs = stack[sp - 2].as.scalar;
+    stack[sp - 2].as.scalar = (rhs != 0.0f) ? fmodf(lhs, rhs) : 0.0f;
     sp--;
     NEXT();
 }
@@ -1689,6 +1889,28 @@ dop_smoothstep: {
     float edge1 = stack[sp - 2].as.scalar;
     float x = stack[sp - 1].as.scalar;
     stack[sp - 3].as.scalar = fw_bc3_smoothstep(edge0, edge1, x);
+    sp -= 2;
+    NEXT();
+}
+dop_pow: {
+    float base = stack[sp - 2].as.scalar;
+    float exp = stack[sp - 1].as.scalar;
+    stack[sp - 2].as.scalar = powf(base, exp);
+    sp--;
+    NEXT();
+}
+dop_noise: {
+    float nx = stack[sp - 2].as.scalar;
+    float ny = stack[sp - 1].as.scalar;
+    stack[sp - 2].as.scalar = fw_bc3_noise2(nx, ny);
+    sp--;
+    NEXT();
+}
+dop_noise3: {
+    float nx = stack[sp - 3].as.scalar;
+    float ny = stack[sp - 2].as.scalar;
+    float nz = stack[sp - 1].as.scalar;
+    stack[sp - 3].as.scalar = fw_bc3_noise3(nx, ny, nz);
     sp -= 2;
     NEXT();
 }
