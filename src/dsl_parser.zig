@@ -943,11 +943,11 @@ test "parseAndValidate accepts frame, for, and if blocks" {
 
 test "parseAndValidate accepts bundled v1 DSL examples" {
     const example_paths = [_][]const u8{
-        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "aurora.dsl",
-        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "aurora-ribbons-classic.dsl",
-        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "campfire.dsl",
-        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "soap-bubbles.dsl",
-        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "rain-ripple.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "ambient" ++ std.fs.path.sep_str ++ "aurora.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "ambient" ++ std.fs.path.sep_str ++ "aurora-ribbons-classic.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "nature" ++ std.fs.path.sep_str ++ "campfire.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "ambient" ++ std.fs.path.sep_str ++ "soap-bubbles.dsl",
+        "examples" ++ std.fs.path.sep_str ++ "dsl" ++ std.fs.path.sep_str ++ "v1" ++ std.fs.path.sep_str ++ "nature" ++ std.fs.path.sep_str ++ "rain-ripple.dsl",
     };
 
     for (example_paths) |example_path| {
