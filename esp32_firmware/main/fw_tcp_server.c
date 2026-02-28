@@ -660,6 +660,11 @@ static uint8_t fw_tcp_handle_v3_upload(fw_tcp_server_state_t *state, const uint8
         state->shader_active = false;
         state->shader_source = FW_TCP_SHADER_SOURCE_NONE;
         state->uniform_last_color_valid = false;
+        if (state->phasor_state != NULL) {
+            free(state->phasor_state);
+            state->phasor_state = NULL;
+            state->phasor_state_count = 0;
+        }
         xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_VM_ERROR;
     }
@@ -669,6 +674,11 @@ static uint8_t fw_tcp_handle_v3_upload(fw_tcp_server_state_t *state, const uint8
     state->shader_active = false;
     state->shader_source = FW_TCP_SHADER_SOURCE_NONE;
     state->uniform_last_color_valid = false;
+    if (state->phasor_state != NULL) {
+        free(state->phasor_state);
+        state->phasor_state = NULL;
+        state->phasor_state_count = 0;
+    }
     xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
 }
@@ -695,6 +705,11 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
         ESP_LOGW(TAG, "shader activate failed: %s", fw_bc3_status_to_string(vm_status));
         state->shader_active = false;
         state->uniform_last_color_valid = false;
+        if (state->phasor_state != NULL) {
+            free(state->phasor_state);
+            state->phasor_state = NULL;
+            state->phasor_state_count = 0;
+        }
         xSemaphoreGive(state->state_lock);
         return FW_TCP_V3_STATUS_VM_ERROR;
     }
@@ -707,6 +722,11 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
     state->shader_frame_count = 0U;
     state->measured_fps = 0.0f;
     state->uniform_last_color_valid = false;
+    if (state->phasor_state != NULL) {
+        free(state->phasor_state);
+        state->phasor_state = NULL;
+        state->phasor_state_count = 0;
+    }
     xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
 }
@@ -783,6 +803,11 @@ static uint8_t fw_tcp_handle_v3_stop_shader(fw_tcp_server_state_t *state) {
     state->shader_frame_count = 0U;
     state->measured_fps = 0.0f;
     state->uniform_last_color_valid = false;
+    if (state->phasor_state != NULL) {
+        free(state->phasor_state);
+        state->phasor_state = NULL;
+        state->phasor_state_count = 0;
+    }
 #if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
     if (fw_audio_output_is_active()) {
         fw_audio_output_stop();
