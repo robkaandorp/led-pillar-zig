@@ -9,7 +9,7 @@
 
 #define FW_BC3_INPUT_SLOT_COUNT 7U
 #define FW_BC3_MAX_CALL_ARGS 8U
-#define FW_BC3_BUILTIN_COUNT 23U
+#define FW_BC3_BUILTIN_COUNT 24U
 
 typedef enum {
     FW_BC3_OP_PUSH_LITERAL = 1,
@@ -62,11 +62,13 @@ typedef enum {
     FW_BC3_DOP_BUILTIN_POW = 24,
     FW_BC3_DOP_BUILTIN_NOISE = 25,
     FW_BC3_DOP_BUILTIN_NOISE3 = 26,
+    // Inlined phasor (returns 0 in bytecode VM)
+    FW_BC3_DOP_BUILTIN_PHASOR = 27,
     // Inlined type constructors
-    FW_BC3_DOP_BUILTIN_VEC2 = 27,
-    FW_BC3_DOP_BUILTIN_RGBA = 28,
+    FW_BC3_DOP_BUILTIN_VEC2 = 28,
+    FW_BC3_DOP_BUILTIN_RGBA = 29,
     // Sentinel: terminates computed-goto dispatch
-    FW_BC3_DOP_HALT = 29,
+    FW_BC3_DOP_HALT = 30,
 } fw_bc3_decoded_opcode_t;
 
 typedef enum {
@@ -101,8 +103,9 @@ typedef enum {
     FW_BC3_BUILTIN_POW = 18,
     FW_BC3_BUILTIN_NOISE = 19,
     FW_BC3_BUILTIN_NOISE3 = 20,
-    FW_BC3_BUILTIN_VEC2 = 21,
-    FW_BC3_BUILTIN_RGBA = 22,
+    FW_BC3_BUILTIN_PHASOR = 21,
+    FW_BC3_BUILTIN_VEC2 = 22,
+    FW_BC3_BUILTIN_RGBA = 23,
 } fw_bc3_builtin_id_t;
 
 typedef struct {
@@ -620,6 +623,9 @@ static fw_bc3_status_t fw_bc3_parse_expression(fw_bc3_program_t *program, fw_bc3
                         break;
                     case FW_BC3_BUILTIN_NOISE3:
                         dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_NOISE3;
+                        break;
+                    case FW_BC3_BUILTIN_PHASOR:
+                        dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_PHASOR;
                         break;
                     case FW_BC3_BUILTIN_VEC2:
                         dop->op = (uint8_t)FW_BC3_DOP_BUILTIN_VEC2;
@@ -1660,6 +1666,10 @@ static fw_bc3_status_t fw_bc3_eval_builtin(
             }
             *out = fw_bc3_make_scalar(fw_bc3_noise3(a0, a1, a2));
             return FW_BC3_OK;
+        case FW_BC3_BUILTIN_PHASOR:
+            /* Phasor requires persistent state; returns 0 in bytecode VM. */
+            *out = fw_bc3_make_scalar(0.0f);
+            return FW_BC3_OK;
         case FW_BC3_BUILTIN_VEC2:
             if (arg_count != 2U) {
                 return FW_BC3_ERR_FORMAT;
@@ -1765,6 +1775,7 @@ static fw_bc3_status_t __attribute__((flatten)) IRAM_ATTR fw_bc3_eval_expression
         [FW_BC3_DOP_BUILTIN_POW]     = &&dop_pow,
         [FW_BC3_DOP_BUILTIN_NOISE]   = &&dop_noise,
         [FW_BC3_DOP_BUILTIN_NOISE3]  = &&dop_noise3,
+        [FW_BC3_DOP_BUILTIN_PHASOR]  = &&dop_phasor,
         [FW_BC3_DOP_BUILTIN_VEC2]    = &&dop_vec2,
         [FW_BC3_DOP_BUILTIN_RGBA]    = &&dop_rgba,
         [FW_BC3_DOP_HALT]            = &&dop_halt,
@@ -1914,6 +1925,10 @@ dop_noise3: {
     sp -= 2;
     NEXT();
 }
+dop_phasor:
+    /* Phasor requires persistent state; returns 0 in bytecode VM. */
+    stack[sp - 1].as.scalar = 0.0f;
+    NEXT();
 dop_vec2: {
     float x_val = stack[sp - 2].as.scalar;
     float y_val = stack[sp - 1].as.scalar;

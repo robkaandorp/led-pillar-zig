@@ -28,6 +28,7 @@ pub const BuiltinId = enum {
     pow,
     noise,
     noise3,
+    phasor,
     vec2,
     rgba,
 };
@@ -142,6 +143,7 @@ const builtin_specs = [_]BuiltinSpec{
     .{ .id = .pow, .name = "pow", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
     .{ .id = .noise, .name = "noise", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
     .{ .id = .noise3, .name = "noise3", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
+    .{ .id = .phasor, .name = "phasor", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
     .{ .id = .vec2, .name = "vec2", .return_type = .vec2, .arg_types = &[_]ValueType{ .scalar, .scalar } },
     .{ .id = .rgba, .name = "rgba", .return_type = .rgba, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar, .scalar } },
 };
@@ -1159,4 +1161,29 @@ test "parseAndValidate accepts pow, modulo, noise, and noise3" {
     const prec_program = try parseAndValidate(arena.allocator(), prec_source);
     // If it parsed without error and has 1 layer, precedence is correct (% binds tighter than +)
     try std.testing.expectEqual(@as(usize, 1), prec_program.layers.len);
+}
+
+test "parseAndValidate accepts phasor builtin in audio block" {
+    const source =
+        \\effect phasor_test
+        \\layer l {
+        \\  blend rgba(1.0, 0.0, 0.0, 1.0)
+        \\}
+        \\audio {
+        \\  let phase = phasor(440.0)
+        \\  out sin(phase * 6.283185)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = try parseAndValidate(arena.allocator(), source);
+    try std.testing.expectEqual(@as(usize, 2), program.audio_statements.len);
+    // Verify the first audio statement is a let with a phasor call
+    const let_stmt = program.audio_statements[0].let_decl;
+    try std.testing.expectEqualStrings("phase", let_stmt.name);
+    try std.testing.expectEqual(Expr.call, std.meta.activeTag(let_stmt.value.*));
+    try std.testing.expectEqual(BuiltinId.phasor, let_stmt.value.call.builtin);
 }

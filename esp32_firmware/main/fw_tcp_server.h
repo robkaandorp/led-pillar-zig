@@ -36,6 +36,8 @@ typedef struct fw_tcp_server_state {
     fw_tcp_shader_source_t shader_source;
     const dsl_shader_entry_t *active_native_shader;
     float native_shader_seed;
+    float *phasor_state;
+    int phasor_state_count;
     bool default_shader_persisted;
     bool default_shader_faulted;
     uint32_t shader_slow_frame_count;

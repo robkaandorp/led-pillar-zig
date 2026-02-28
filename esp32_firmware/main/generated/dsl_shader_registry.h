@@ -15,7 +15,8 @@ typedef struct {
     int has_frame_func;
     void (*eval_frame)(float time, float frame);
     int has_audio_func;
-    float (*eval_audio)(float time, float seed);
+    float (*eval_audio)(float time, float seed, float sample_rate, float *phasor_state);
+    int phasor_count;
 } dsl_shader_entry_t;
 
 extern const dsl_shader_entry_t dsl_shader_registry[];

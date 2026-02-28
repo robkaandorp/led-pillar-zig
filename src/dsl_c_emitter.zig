@@ -1,6 +1,9 @@
 const std = @import("std");
 const dsl_parser = @import("dsl_parser.zig");
 
+/// Counter for phasor() calls during audio emission. Reset before each audio block.
+var phasor_emit_counter: usize = 0;
+
 const Symbol = struct {
     c_name: []const u8,
     value_type: dsl_parser.ValueType,
@@ -252,6 +255,12 @@ pub fn writePreambleC(writer: anytype) !void {
         \\    return 32.0f * n;
         \\}}
         \\
+        \\static inline float dsl_phasor_advance(float *state, float freq, float sample_rate) {{
+        \\    *state += freq / sample_rate;
+        \\    *state -= floorf(*state);
+        \\    return *state;
+        \\}}
+        \\
         \\
         ,
         .{},
@@ -262,6 +271,38 @@ pub fn writePreambleC(writer: anytype) !void {
 pub fn writeProgramC(allocator: std.mem.Allocator, writer: anytype, program: dsl_parser.Program) !void {
     try writePreambleC(writer);
     try writeShaderFunctions(allocator, writer, program, null);
+}
+
+/// Count the number of `phasor()` calls in a slice of statements (recursive).
+pub fn countPhasorCalls(statements: []const dsl_parser.Statement) usize {
+    var count: usize = 0;
+    for (statements) |stmt| {
+        switch (stmt) {
+            .let_decl => |let_decl| count += countPhasorCallsInExpr(let_decl.value),
+            .blend => |expr| count += countPhasorCallsInExpr(expr),
+            .out => |expr| count += countPhasorCallsInExpr(expr),
+            .if_stmt => |if_stmt| {
+                count += countPhasorCallsInExpr(if_stmt.condition);
+                count += countPhasorCalls(if_stmt.then_statements);
+                count += countPhasorCalls(if_stmt.else_statements);
+            },
+            .for_range => |for_range| count += countPhasorCalls(for_range.statements),
+        }
+    }
+    return count;
+}
+
+fn countPhasorCallsInExpr(expr: *const dsl_parser.Expr) usize {
+    return switch (expr.*) {
+        .number, .identifier => 0,
+        .unary => |u| countPhasorCallsInExpr(u.operand),
+        .binary => |b| countPhasorCallsInExpr(b.left) + countPhasorCallsInExpr(b.right),
+        .call => |c| blk: {
+            var n: usize = if (c.builtin == .phasor) @as(usize, 1) else @as(usize, 0);
+            for (c.args) |arg| n += countPhasorCallsInExpr(arg);
+            break :blk n;
+        },
+    };
 }
 
 /// Emit shader functions with a prefix. When prefix is non-null, functions are
@@ -370,9 +411,11 @@ pub fn writeShaderFunctions(
         try writer.print(
             \\
             \\/* Audio: generated from effect: {s} */
-            \\{s}float {s}(float time, float seed) {{
+            \\{s}float {s}(float time, float seed, float sample_rate, float *phasor_state) {{
             \\
         , .{ program.effect_name, static_kw, audio_fn_name });
+
+        phasor_emit_counter = 0;
 
         var audio_name_counter: usize = 0;
         var audio_scope = Scope.init(temp_allocator, null);
@@ -567,6 +610,12 @@ fn emitExpr(writer: anytype, expr: *dsl_parser.Expr, scope: *const Scope) anyerr
                 .pow => try emitCall2(writer, scope, "powf", call_expr.args[0], call_expr.args[1]),
                 .noise => try emitCall2(writer, scope, "dsl_noise2", call_expr.args[0], call_expr.args[1]),
                 .noise3 => try emitCall3(writer, scope, "dsl_noise3", call_expr.args[0], call_expr.args[1], call_expr.args[2]),
+                .phasor => {
+                    try writer.print("dsl_phasor_advance(&phasor_state[{d}], ", .{phasor_emit_counter});
+                    try emitExpr(writer, call_expr.args[0], scope);
+                    try writer.writeAll(", sample_rate)");
+                    phasor_emit_counter += 1;
+                },
                 .vec2 => {
                     try writer.writeAll("(dsl_vec2_t){ .x = ");
                     try emitExpr(writer, call_expr.args[0], scope);
@@ -775,4 +824,59 @@ test "writeProgramC emits pow, fmodf, and noise calls" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "powf(") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "fmodf(") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "dsl_noise2(") != null);
+}
+
+test "writeProgramC emits phasor_advance in audio block" {
+    const source =
+        \\effect phasor_test
+        \\layer l {
+        \\  blend rgba(1.0, 0.0, 0.0, 1.0)
+        \\}
+        \\audio {
+        \\  let phase = phasor(440.0)
+        \\  out sin(phase * 6.283185)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const program = try dsl_parser.parseAndValidate(arena.allocator(), source);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    const writer = out.writer(std.testing.allocator);
+    try writeProgramC(std.testing.allocator, writer, program);
+
+    // Verify the audio function has the new signature
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "float dsl_shader_eval_audio(float time, float seed, float sample_rate, float *phasor_state)") != null);
+    // Verify phasor_advance call is emitted
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "dsl_phasor_advance(&phasor_state[0], ") != null);
+    // Verify the helper function is in the preamble
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "dsl_phasor_advance(float *state, float freq, float sample_rate)") != null);
+}
+
+test "countPhasorCalls counts phasor calls in statements" {
+    const source =
+        \\effect phasor_count_test
+        \\layer l {
+        \\  blend rgba(1.0, 0.0, 0.0, 1.0)
+        \\}
+        \\audio {
+        \\  let p1 = phasor(440.0)
+        \\  let p2 = phasor(880.0)
+        \\  out sin(p1 * 6.283185) + sin(p2 * 6.283185)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const program = try dsl_parser.parseAndValidate(arena.allocator(), source);
+
+    try std.testing.expectEqual(@as(usize, 2), countPhasorCalls(program.audio_statements));
+    // Pixel layers should have 0 phasor calls
+    for (program.layers) |layer| {
+        try std.testing.expectEqual(@as(usize, 0), countPhasorCalls(layer.statements));
+    }
 }

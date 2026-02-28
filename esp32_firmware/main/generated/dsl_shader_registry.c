@@ -213,6 +213,12 @@ static inline float dsl_noise3(float x, float y, float z) {
     return 32.0f * n;
 }
 
+static inline float dsl_phasor_advance(float *state, float freq, float sample_rate) {
+    *state += freq / sample_rate;
+    *state -= floorf(*state);
+    return *state;
+}
+
 
 /* Generated from effect: aurora_v1 */
 static void aurora_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
@@ -402,6 +408,99 @@ static void dream_weaver_eval_pixel(float time, float frame, float x, float y, f
     *out_color = __dsl_out;
 }
 
+/* Generated from effect: electric_arcs */
+static void electric_arcs_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_arc_speed_0 = 1.500000f;
+    const float dsl_param_intensity_1 = 0.800000f;
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer dark_base */
+    const float dsl_let_ny_2 = (y / height);
+    const float dsl_let_bg_3 = (0.020000f + (0.010000f * dsl_let_ny_2));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.000000f, .g = 0.000000f, .b = dsl_let_bg_3, .a = 1.000000f }, __dsl_out);
+    /* layer arcs */
+    const float dsl_let_nx_4 = (x / width);
+    const float dsl_let_ny_5 = (y / height);
+    for (int32_t dsl_iter_i_6 = 0; dsl_iter_i_6 < 3; dsl_iter_i_6++) {
+        const float dsl_index_i_7 = (float)dsl_iter_i_6;
+        const float dsl_let_offset_8 = (dsl_index_i_7 * 0.333000f);
+        const float dsl_let_ax_9 = dsl_fract((dsl_let_nx_4 + dsl_let_offset_8));
+        const float dsl_let_n_10 = dsl_noise3((dsl_let_ax_9 * 4.000000f), (dsl_let_ny_5 * 6.000000f), ((time * dsl_param_arc_speed_0) + (dsl_index_i_7 * 2.700000f)));
+        const float dsl_let_displaced_x_11 = (dsl_let_ax_9 + (dsl_let_n_10 * 0.150000f));
+        const float dsl_let_dx_12 = fabsf((dsl_let_displaced_x_11 - 0.500000f));
+        const float dsl_let_arc_val_13 = (powf(fmaxf((1.000000f - (dsl_let_dx_12 * 8.000000f)), 0.000000f), 6.000000f) * dsl_param_intensity_1);
+        const float dsl_let_flicker_14 = dsl_noise3((dsl_let_ax_9 * 10.000000f), (dsl_let_ny_5 * 10.000000f), ((time * 3.000000f) + (dsl_index_i_7 * 5.000000f)));
+        const float dsl_let_arc_bright_15 = (dsl_let_arc_val_13 * (0.600000f + (0.400000f * ((dsl_let_flicker_14 * 0.500000f) + 0.500000f))));
+        const float dsl_let_r_16 = (dsl_let_arc_bright_15 * 0.800000f);
+        const float dsl_let_g_17 = (dsl_let_arc_bright_15 * 0.850000f);
+        const float dsl_let_b_18 = dsl_let_arc_bright_15;
+        __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_16, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_17, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_18, 0.000000f, 1.000000f), .a = dsl_let_arc_bright_15 }, __dsl_out);
+    }
+    /* layer glow_pulse */
+    const float dsl_let_nx_19 = (x / width);
+    const float dsl_let_ny_20 = (y / height);
+    const float dsl_let_pulse_21 = (powf(((sinf((time * 3.000000f)) * 0.500000f) + 0.500000f), 3.000000f) * 0.150000f);
+    const float dsl_let_n_22 = dsl_noise2(((dsl_let_nx_19 * 3.000000f) + (time * 0.500000f)), (dsl_let_ny_20 * 3.000000f));
+    const float dsl_let_glow_23 = (dsl_let_pulse_21 * ((dsl_let_n_22 * 0.500000f) + 0.500000f));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = (0.200000f * dsl_let_glow_23), .g = (0.300000f * dsl_let_glow_23), .b = dsl_let_glow_23, .a = dsl_let_glow_23 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Generated from effect: forest_wind */
+static void forest_wind_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_sway_speed_0 = 0.600000f;
+    const float dsl_param_sway_amount_1 = 0.120000f;
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer ground */
+    const float dsl_let_ny_2 = (y / height);
+    const float dsl_let_ground_mask_3 = dsl_smoothstep(0.600000f, 0.900000f, dsl_let_ny_2);
+    const float dsl_let_r_4 = (dsl_let_ground_mask_3 * 0.250000f);
+    const float dsl_let_g_5 = (dsl_let_ground_mask_3 * 0.150000f);
+    const float dsl_let_b_6 = (dsl_let_ground_mask_3 * 0.050000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_4, .g = dsl_let_g_5, .b = dsl_let_b_6, .a = dsl_let_ground_mask_3 }, __dsl_out);
+    /* layer trees */
+    const float dsl_let_nx_7 = (x / width);
+    const float dsl_let_ny_8 = (y / height);
+    const float dsl_let_wind_9 = ((dsl_noise2(((dsl_let_nx_7 * 2.000000f) + (time * dsl_param_sway_speed_0)), (time * 0.300000f)) * dsl_param_sway_amount_1) * (1.000000f - dsl_let_ny_8));
+    for (int32_t dsl_iter_i_10 = 0; dsl_iter_i_10 < 5; dsl_iter_i_10++) {
+        const float dsl_index_i_11 = (float)dsl_iter_i_10;
+        const float dsl_let_tree_x_12 = (width * dsl_hash01(((dsl_index_i_11 * 31.000000f) + 7.000000f)));
+        const float dsl_let_tree_w_13 = (0.400000f + (dsl_hash01(((dsl_index_i_11 * 17.000000f) + 3.000000f)) * 0.300000f));
+        const float dsl_let_trunk_top_14 = (0.300000f + (dsl_hash01(((dsl_index_i_11 * 23.000000f) + 11.000000f)) * 0.300000f));
+        const float dsl_let_dx_15 = dsl_wrapdx(x, (dsl_let_tree_x_12 + (dsl_let_wind_9 * height)), width);
+        const float dsl_let_trunk_16 = (dsl_smoothstep(dsl_let_tree_w_13, (dsl_let_tree_w_13 * 0.500000f), fabsf(dsl_let_dx_15)) * dsl_smoothstep(dsl_let_trunk_top_14, (dsl_let_trunk_top_14 + 0.100000f), dsl_let_ny_8));
+        const float dsl_let_r_17 = (dsl_let_trunk_16 * 0.300000f);
+        const float dsl_let_g_18 = (dsl_let_trunk_16 * 0.180000f);
+        const float dsl_let_b_19 = (dsl_let_trunk_16 * 0.080000f);
+        __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_17, .g = dsl_let_g_18, .b = dsl_let_b_19, .a = (dsl_let_trunk_16 * 0.800000f) }, __dsl_out);
+    }
+    /* layer foliage */
+    const float dsl_let_nx_20 = (x / width);
+    const float dsl_let_ny_21 = (y / height);
+    const float dsl_let_wind_22 = dsl_noise2(((dsl_let_nx_20 * 3.000000f) + ((time * dsl_param_sway_speed_0) * 1.200000f)), ((dsl_let_ny_21 * 2.000000f) + (time * 0.200000f)));
+    const float dsl_let_n1_23 = ((dsl_noise2(((dsl_let_nx_20 * 5.000000f) + (dsl_let_wind_22 * 0.300000f)), ((dsl_let_ny_21 * 4.000000f) - (time * 0.100000f))) * 0.500000f) + 0.500000f);
+    const float dsl_let_n2_24 = ((dsl_noise2(((dsl_let_nx_20 * 8.000000f) - (time * 0.150000f)), ((dsl_let_ny_21 * 6.000000f) + (dsl_let_wind_22 * 0.200000f))) * 0.500000f) + 0.500000f);
+    const float dsl_let_height_mask_25 = dsl_smoothstep(0.700000f, 0.200000f, dsl_let_ny_21);
+    const float dsl_let_leaf_26 = (powf((dsl_let_n1_23 * dsl_let_n2_24), 1.500000f) * dsl_let_height_mask_25);
+    const float dsl_let_shade_27 = ((dsl_noise3((dsl_let_nx_20 * 4.000000f), (dsl_let_ny_21 * 3.000000f), (time * 0.100000f)) * 0.500000f) + 0.500000f);
+    const float dsl_let_r_28 = (dsl_let_leaf_26 * (0.080000f + (0.100000f * dsl_let_shade_27)));
+    const float dsl_let_g_29 = (dsl_let_leaf_26 * (0.350000f + (0.350000f * dsl_let_shade_27)));
+    const float dsl_let_b_30 = (dsl_let_leaf_26 * (0.050000f + (0.080000f * dsl_let_shade_27)));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_28, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_29, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_30, 0.000000f, 1.000000f), .a = (dsl_let_leaf_26 * 0.750000f) }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Audio: generated from effect: forest_wind */
+static float forest_wind_eval_audio(float time, float seed, float sample_rate, float *phasor_state) {
+    const float dsl_param_sway_speed_0 = 0.600000f;
+    const float dsl_param_sway_amount_1 = 0.120000f;
+    float __dsl_audio_out = 0.0f;
+    const float dsl_let_n_2 = dsl_noise3((time * 80.000000f), (seed * 10.000000f), (time * 0.500000f));
+    const float dsl_let_low_mod_3 = ((sinf((time * 0.700000f)) * 0.500000f) + 0.500000f);
+    const float dsl_let_wind_4 = (dsl_let_n_2 * (0.100000f + (0.100000f * dsl_let_low_mod_3)));
+    __dsl_audio_out = dsl_clamp(dsl_let_wind_4, (-(1.000000f)), 1.000000f);
+    return __dsl_audio_out;
+}
+
 /* Generated from effect: gradient */
 static void gradient_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
     dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
@@ -411,6 +510,70 @@ static void gradient_eval_pixel(float time, float frame, float x, float y, float
     const float dsl_let_at_2 = ((sinf((x * y)) * 0.500000f) + 0.500000f);
     __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_xt_0, .g = dsl_let_yt_1, .b = dsl_let_xt_0, .a = dsl_let_at_2 }, __dsl_out);
     *out_color = __dsl_out;
+}
+
+/* Generated from effect: heartbeat_pulse */
+static void heartbeat_pulse_eval_frame(float time, float frame) {
+    const float dsl_param_bpm_0 = 72.000000f;
+    const float dsl_let_beat_period_1 = (60.000000f / dsl_param_bpm_0);
+    const float dsl_let_phase_2 = dsl_fract((time / dsl_let_beat_period_1));
+    const float dsl_let_lub_3 = powf(fmaxf((1.000000f - (dsl_let_phase_2 * 8.000000f)), 0.000000f), 3.000000f);
+    const float dsl_let_dub_phase_4 = fmaxf((dsl_let_phase_2 - 0.200000f), 0.000000f);
+    const float dsl_let_dub_5 = powf(fmaxf((1.000000f - (dsl_let_dub_phase_4 * 10.000000f)), 0.000000f), 3.000000f);
+    const float dsl_let_beat_6 = (dsl_let_lub_3 + (dsl_let_dub_5 * 0.700000f));
+}
+
+/* Generated from effect: heartbeat_pulse */
+static void heartbeat_pulse_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_bpm_0 = 72.000000f;
+    const float dsl_let_beat_period_1 = (60.000000f / dsl_param_bpm_0);
+    const float dsl_let_phase_2 = dsl_fract((time / dsl_let_beat_period_1));
+    const float dsl_let_lub_3 = powf(fmaxf((1.000000f - (dsl_let_phase_2 * 8.000000f)), 0.000000f), 3.000000f);
+    const float dsl_let_dub_phase_4 = fmaxf((dsl_let_phase_2 - 0.200000f), 0.000000f);
+    const float dsl_let_dub_5 = powf(fmaxf((1.000000f - (dsl_let_dub_phase_4 * 10.000000f)), 0.000000f), 3.000000f);
+    const float dsl_let_beat_6 = (dsl_let_lub_3 + (dsl_let_dub_5 * 0.700000f));
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer pulse_ring */
+    const float dsl_let_cx_7 = (width * 0.500000f);
+    const float dsl_let_cy_8 = (height * 0.500000f);
+    const float dsl_let_dx_9 = dsl_wrapdx(x, dsl_let_cx_7, width);
+    const float dsl_let_dy_10 = (y - dsl_let_cy_8);
+    const float dsl_let_dist_11 = sqrtf(((dsl_let_dx_9 * dsl_let_dx_9) + (dsl_let_dy_10 * dsl_let_dy_10)));
+    const float dsl_let_max_r_12 = (height * 0.500000f);
+    const float dsl_let_ring_pos_13 = (dsl_let_beat_6 * dsl_let_max_r_12);
+    const float dsl_let_ring_dist_14 = fabsf((dsl_let_dist_11 - dsl_let_ring_pos_13));
+    const float dsl_let_ring_15 = (dsl_smoothstep(2.500000f, 0.000000f, dsl_let_ring_dist_14) * dsl_let_beat_6);
+    const float dsl_let_r_16 = (dsl_let_ring_15 * 0.900000f);
+    const float dsl_let_g_17 = (dsl_let_ring_15 * 0.100000f);
+    const float dsl_let_b_18 = (dsl_let_ring_15 * 0.150000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_16, 0.000000f, 1.000000f), .g = dsl_let_g_17, .b = dsl_let_b_18, .a = dsl_let_ring_15 }, __dsl_out);
+    /* layer core_glow */
+    const float dsl_let_cx_19 = (width * 0.500000f);
+    const float dsl_let_cy_20 = (height * 0.500000f);
+    const float dsl_let_dx_21 = dsl_wrapdx(x, dsl_let_cx_19, width);
+    const float dsl_let_dy_22 = (y - dsl_let_cy_20);
+    const float dsl_let_dist_23 = sqrtf(((dsl_let_dx_21 * dsl_let_dx_21) + (dsl_let_dy_22 * dsl_let_dy_22)));
+    const float dsl_let_glow_24 = (powf(fmaxf((1.000000f - (dsl_let_dist_23 / 8.000000f)), 0.000000f), 2.000000f) * (0.150000f + (0.850000f * dsl_let_beat_6)));
+    const float dsl_let_r_25 = (dsl_let_glow_24 * 1.000000f);
+    const float dsl_let_g_26 = (dsl_let_glow_24 * 0.200000f);
+    const float dsl_let_b_27 = (dsl_let_glow_24 * 0.250000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_25, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_26, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_27, 0.000000f, 1.000000f), .a = dsl_let_glow_24 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Audio: generated from effect: heartbeat_pulse */
+static float heartbeat_pulse_eval_audio(float time, float seed, float sample_rate, float *phasor_state) {
+    const float dsl_param_bpm_0 = 72.000000f;
+    float __dsl_audio_out = 0.0f;
+    const float dsl_let_beat_period_1 = (60.000000f / dsl_param_bpm_0);
+    const float dsl_let_phase_2 = dsl_fract((time / dsl_let_beat_period_1));
+    const float dsl_let_lub_env_3 = powf(fmaxf((1.000000f - (dsl_let_phase_2 * 8.000000f)), 0.000000f), 3.000000f);
+    const float dsl_let_lub_4 = ((sinf(((time * 55.000000f) * 6.28318530717958647692f)) * dsl_let_lub_env_3) * 0.500000f);
+    const float dsl_let_dub_phase_5 = fmaxf((dsl_let_phase_2 - 0.200000f), 0.000000f);
+    const float dsl_let_dub_env_6 = powf(fmaxf((1.000000f - (dsl_let_dub_phase_5 * 10.000000f)), 0.000000f), 3.000000f);
+    const float dsl_let_dub_7 = ((sinf(((time * 70.000000f) * 6.28318530717958647692f)) * dsl_let_dub_env_6) * 0.350000f);
+    __dsl_audio_out = dsl_clamp((dsl_let_lub_4 + dsl_let_dub_7), (-(1.000000f)), 1.000000f);
+    return __dsl_audio_out;
 }
 
 /* Generated from effect: infinite_lines */
@@ -467,6 +630,71 @@ static void infinite_lines_eval_pixel(float time, float frame, float x, float y,
     *out_color = __dsl_out;
 }
 
+/* Generated from effect: lava_lamp */
+static void lava_lamp_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_drift_0 = 0.300000f;
+    const float dsl_param_blob_scale_1 = 0.070000f;
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer warm_bg */
+    const float dsl_let_ny_2 = (y / height);
+    const float dsl_let_r_3 = (0.120000f + (0.080000f * dsl_let_ny_2));
+    const float dsl_let_g_4 = (0.030000f + (0.020000f * dsl_let_ny_2));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_3, .g = dsl_let_g_4, .b = 0.010000f, .a = 1.000000f }, __dsl_out);
+    /* layer blobs */
+    const float dsl_let_nx_5 = (x * dsl_param_blob_scale_1);
+    const float dsl_let_ny_6 = (y * dsl_param_blob_scale_1);
+    const float dsl_let_t_7 = (time * dsl_param_drift_0);
+    const float dsl_let_n1_8 = ((dsl_noise2((dsl_let_nx_5 + (dsl_let_t_7 * 0.700000f)), (dsl_let_ny_6 - dsl_let_t_7)) * 0.500000f) + 0.500000f);
+    const float dsl_let_n2_9 = ((dsl_noise2(((dsl_let_nx_5 * 1.500000f) - (dsl_let_t_7 * 0.400000f)), ((dsl_let_ny_6 * 1.500000f) + (dsl_let_t_7 * 0.600000f))) * 0.500000f) + 0.500000f);
+    const float dsl_let_combined_10 = ((dsl_let_n1_8 + dsl_let_n2_9) * 0.500000f);
+    const float dsl_let_blob_11 = powf(dsl_smoothstep(0.350000f, 0.650000f, dsl_let_combined_10), 1.500000f);
+    const float dsl_let_hue_noise_12 = ((dsl_noise2(((dsl_let_nx_5 * 0.500000f) + (dsl_let_t_7 * 0.200000f)), (dsl_let_ny_6 * 0.500000f)) * 0.500000f) + 0.500000f);
+    const float dsl_let_r_13 = (dsl_let_blob_11 * (0.900000f + (0.100000f * dsl_let_hue_noise_12)));
+    const float dsl_let_g_14 = (dsl_let_blob_11 * (0.250000f + (0.450000f * dsl_let_hue_noise_12)));
+    const float dsl_let_b_15 = ((dsl_let_blob_11 * 0.050000f) * dsl_let_hue_noise_12);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_13, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_14, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_15, 0.000000f, 1.000000f), .a = (dsl_let_blob_11 * 0.850000f) }, __dsl_out);
+    /* layer hot_spots */
+    const float dsl_let_nx_16 = ((x * dsl_param_blob_scale_1) * 1.300000f);
+    const float dsl_let_ny_17 = ((y * dsl_param_blob_scale_1) * 1.300000f);
+    const float dsl_let_t_18 = ((time * dsl_param_drift_0) * 0.800000f);
+    const float dsl_let_n_19 = dsl_noise2((dsl_let_nx_16 - (dsl_let_t_18 * 0.500000f)), (dsl_let_ny_17 + (dsl_let_t_18 * 0.300000f)));
+    const float dsl_let_hot_20 = (powf(fmaxf(dsl_let_n_19, 0.000000f), 4.000000f) * 0.600000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = (1.000000f * dsl_let_hot_20), .g = (0.900000f * dsl_let_hot_20), .b = (0.400000f * dsl_let_hot_20), .a = dsl_let_hot_20 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Generated from effect: ocean_waves */
+static void ocean_waves_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_speed_0 = 0.400000f;
+    const float dsl_param_scale1_1 = 0.150000f;
+    const float dsl_param_scale2_2 = 0.080000f;
+    const float dsl_param_scale3_3 = 0.220000f;
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer deep_water */
+    const float dsl_let_nx_4 = (x * dsl_param_scale1_1);
+    const float dsl_let_ny_5 = (y * dsl_param_scale1_1);
+    const float dsl_let_n_6 = dsl_noise2((dsl_let_nx_4 + ((time * dsl_param_speed_0) * 0.600000f)), (dsl_let_ny_5 + ((time * dsl_param_speed_0) * 0.300000f)));
+    const float dsl_let_val_7 = ((dsl_let_n_6 * 0.500000f) + 0.500000f);
+    const float dsl_let_dark_8 = (dsl_let_val_7 * 0.350000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.000000f, .g = (dsl_let_dark_8 * 0.600000f), .b = dsl_let_dark_8, .a = 1.000000f }, __dsl_out);
+    /* layer mid_waves */
+    const float dsl_let_nx_9 = (x * dsl_param_scale2_2);
+    const float dsl_let_ny_10 = (y * dsl_param_scale2_2);
+    const float dsl_let_n_11 = dsl_noise2((dsl_let_nx_9 + (time * dsl_param_speed_0)), (dsl_let_ny_10 - ((time * dsl_param_speed_0) * 0.500000f)));
+    const float dsl_let_val_12 = ((dsl_let_n_11 * 0.500000f) + 0.500000f);
+    const float dsl_let_bright_13 = (powf(dsl_let_val_12, 1.500000f) * 0.550000f);
+    const float dsl_let_a_14 = dsl_smoothstep(0.150000f, 0.500000f, dsl_let_bright_13);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.050000f, .g = (dsl_let_bright_13 * 0.800000f), .b = dsl_let_bright_13, .a = dsl_let_a_14 }, __dsl_out);
+    /* layer surface_foam */
+    const float dsl_let_nx_15 = (x * dsl_param_scale3_3);
+    const float dsl_let_ny_16 = (y * dsl_param_scale3_3);
+    const float dsl_let_n_17 = dsl_noise2((dsl_let_nx_15 - ((time * dsl_param_speed_0) * 1.200000f)), (dsl_let_ny_16 + ((time * dsl_param_speed_0) * 0.700000f)));
+    const float dsl_let_foam_18 = powf(((dsl_let_n_17 * 0.500000f) + 0.500000f), 3.000000f);
+    const float dsl_let_crest_19 = dsl_smoothstep(0.300000f, 0.600000f, dsl_let_foam_18);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = (0.700000f * dsl_let_crest_19), .g = (0.950000f * dsl_let_crest_19), .b = (1.000000f * dsl_let_crest_19), .a = (dsl_let_crest_19 * 0.700000f) }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
 /* Generated from effect: primal_storm_v1 */
 static void primal_storm_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
     const float dsl_param_t1_0 = ((time * 0.073200f) + (seed * 100.000000f));
@@ -520,6 +748,38 @@ static void primal_storm_eval_pixel(float time, float frame, float x, float y, f
     const float dsl_let_g_40 = (dsl_let_ember_38 * (0.400000f + (0.300000f * dsl_let_stripe_seed_33)));
     const float dsl_let_b_41 = (dsl_let_ember_38 * 0.100000f);
     __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_clamp(dsl_let_r_39, 0.000000f, 1.000000f), .g = dsl_clamp(dsl_let_g_40, 0.000000f, 1.000000f), .b = dsl_clamp(dsl_let_b_41, 0.000000f, 1.000000f), .a = dsl_let_ember_38 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Generated from effect: rain_matrix */
+static void rain_matrix_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_fall_speed_0 = 6.000000f;
+    const float dsl_param_trail_len_1 = 8.000000f;
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer dark_bg */
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.000000f, .g = 0.020000f, .b = 0.000000f, .a = 1.000000f }, __dsl_out);
+    /* layer rain_drops */
+    for (int32_t dsl_iter_i_2 = 0; dsl_iter_i_2 < 6; dsl_iter_i_2++) {
+        const float dsl_index_i_3 = (float)dsl_iter_i_2;
+        const float dsl_let_col_id_4 = (floorf(x) + (dsl_index_i_3 * 7.000000f));
+        const float dsl_let_col_seed_5 = dsl_hash01(((dsl_let_col_id_4 * 17.310000f) + (dsl_index_i_3 * 53.000000f)));
+        const float dsl_let_speed_6 = (dsl_param_fall_speed_0 * (0.500000f + dsl_let_col_seed_5));
+        const float dsl_let_phase_7 = dsl_hash01(((dsl_let_col_id_4 * 41.700000f) + (dsl_index_i_3 * 29.000000f)));
+        const float dsl_let_cycle_8 = dsl_fract((((time * dsl_let_speed_6) / (height + dsl_param_trail_len_1)) + dsl_let_phase_7));
+        const float dsl_let_drop_y_9 = ((dsl_let_cycle_8 * (height + dsl_param_trail_len_1)) - (dsl_param_trail_len_1 * 0.500000f));
+        const float dsl_let_dy_10 = (dsl_let_drop_y_9 - y);
+        const float dsl_let_head_bright_11 = dsl_smoothstep(1.500000f, 0.000000f, fabsf(dsl_let_dy_10));
+        const float dsl_let_trail_12 = (dsl_smoothstep(dsl_param_trail_len_1, 0.000000f, dsl_let_dy_10) * dsl_smoothstep((-(1.000000f)), 0.500000f, dsl_let_dy_10));
+        const float dsl_let_char_cell_13 = floorf(y);
+        const float dsl_let_char_hash_14 = dsl_hash01((((dsl_let_char_cell_13 * 13.700000f) + (dsl_let_col_id_4 * 7.300000f)) + floorf((time * 4.000000f))));
+        const float dsl_let_char_flicker_15 = (0.700000f + (0.300000f * dsl_let_char_hash_14));
+        const float dsl_let_brightness_16 = (fmaxf(dsl_let_head_bright_11, (dsl_let_trail_12 * 0.400000f)) * dsl_let_char_flicker_15);
+        const float dsl_let_is_head_17 = dsl_smoothstep(1.000000f, 0.000000f, fabsf(dsl_let_dy_10));
+        const float dsl_let_r_18 = ((dsl_let_brightness_16 * dsl_let_is_head_17) * 0.700000f);
+        const float dsl_let_g_19 = dsl_let_brightness_16;
+        const float dsl_let_b_20 = ((dsl_let_brightness_16 * dsl_let_is_head_17) * 0.500000f);
+        __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_18, .g = dsl_clamp(dsl_let_g_19, 0.000000f, 1.000000f), .b = dsl_let_b_20, .a = dsl_let_brightness_16 }, __dsl_out);
+    }
     *out_color = __dsl_out;
 }
 
@@ -604,6 +864,101 @@ static void soap_bubbles_eval_pixel(float time, float frame, float x, float y, f
     *out_color = __dsl_out;
 }
 
+/* Generated from effect: spiral_galaxy */
+static void spiral_galaxy_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    const float dsl_param_rotation_speed_0 = 0.150000f;
+    const float dsl_param_arm_count_1 = 2.000000f;
+    const float dsl_param_arm_tightness_2 = 3.000000f;
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer nebula_bg */
+    const float dsl_let_nx_3 = (x / width);
+    const float dsl_let_ny_4 = (y / height);
+    const float dsl_let_n_5 = ((dsl_noise2((dsl_let_nx_3 * 3.000000f), (dsl_let_ny_4 * 3.000000f)) * 0.500000f) + 0.500000f);
+    const float dsl_let_bg_6 = (dsl_let_n_5 * 0.060000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = (dsl_let_bg_6 * 0.300000f), .g = (dsl_let_bg_6 * 0.100000f), .b = (dsl_let_bg_6 * 0.500000f), .a = 1.000000f }, __dsl_out);
+    /* layer spiral_arms */
+    const float dsl_let_cx_7 = (width * 0.500000f);
+    const float dsl_let_cy_8 = (height * 0.500000f);
+    const float dsl_let_dx_9 = (dsl_wrapdx(x, dsl_let_cx_7, width) / width);
+    const float dsl_let_dy_10 = ((y - dsl_let_cy_8) / height);
+    const float dsl_let_dist_11 = sqrtf(((dsl_let_dx_9 * dsl_let_dx_9) + (dsl_let_dy_10 * dsl_let_dy_10)));
+    const float dsl_let_angle_12 = ((dsl_let_dx_9 * 6.000000f) + (dsl_let_dy_10 * 6.000000f));
+    const float dsl_let_spiral_13 = sinf((((dsl_let_angle_12 + ((dsl_let_dist_11 * dsl_param_arm_tightness_2) * 6.28318530717958647692f)) - (time * dsl_param_rotation_speed_0)) * dsl_param_arm_count_1));
+    const float dsl_let_arm_14 = powf(((dsl_let_spiral_13 * 0.500000f) + 0.500000f), 3.000000f);
+    const float dsl_let_radial_15 = dsl_smoothstep(0.500000f, 0.050000f, dsl_let_dist_11);
+    const float dsl_let_brightness_16 = ((dsl_let_arm_14 * dsl_let_radial_15) * 0.700000f);
+    const float dsl_let_r_17 = (dsl_let_brightness_16 * 0.600000f);
+    const float dsl_let_g_18 = (dsl_let_brightness_16 * 0.400000f);
+    const float dsl_let_b_19 = dsl_let_brightness_16;
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_17, .g = dsl_let_g_18, .b = dsl_let_b_19, .a = dsl_let_brightness_16 }, __dsl_out);
+    /* layer arm_stars */
+    const float dsl_let_cell_x_20 = floorf((x * 0.400000f));
+    const float dsl_let_cell_y_21 = floorf((y * 0.300000f));
+    const float dsl_let_star_seed_22 = ((dsl_let_cell_x_20 * 47.310000f) + (dsl_let_cell_y_21 * 29.170000f));
+    const float dsl_let_presence_23 = dsl_hash01(dsl_let_star_seed_22);
+    const float dsl_let_twinkle_24 = ((sinf(((time * 1.500000f) + (dsl_hash01((dsl_let_star_seed_22 + 3.000000f)) * 6.28318530717958647692f))) * 0.500000f) + 0.500000f);
+    const float dsl_let_cx_25 = (width * 0.500000f);
+    const float dsl_let_cy_26 = (height * 0.500000f);
+    const float dsl_let_dx_27 = (dsl_wrapdx(x, dsl_let_cx_25, width) / width);
+    const float dsl_let_dy_28 = ((y - dsl_let_cy_26) / height);
+    const float dsl_let_dist_29 = sqrtf(((dsl_let_dx_27 * dsl_let_dx_27) + (dsl_let_dy_28 * dsl_let_dy_28)));
+    const float dsl_let_angle_30 = ((dsl_let_dx_27 * 6.000000f) + (dsl_let_dy_28 * 6.000000f));
+    const float dsl_let_spiral_31 = sinf((((dsl_let_angle_30 + ((dsl_let_dist_29 * dsl_param_arm_tightness_2) * 6.28318530717958647692f)) - (time * dsl_param_rotation_speed_0)) * dsl_param_arm_count_1));
+    const float dsl_let_arm_proximity_32 = powf(((dsl_let_spiral_31 * 0.500000f) + 0.500000f), 2.000000f);
+    const float dsl_let_threshold_33 = (0.970000f - (0.050000f * dsl_let_arm_proximity_32));
+    const float dsl_let_bright_34 = (dsl_smoothstep(dsl_let_threshold_33, 1.000000f, dsl_let_presence_23) * (0.500000f + (0.500000f * dsl_let_twinkle_24)));
+    const float dsl_let_r_35 = (dsl_let_bright_34 * 0.900000f);
+    const float dsl_let_g_36 = (dsl_let_bright_34 * 0.850000f);
+    const float dsl_let_b_37 = dsl_let_bright_34;
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_35, .g = dsl_let_g_36, .b = dsl_let_b_37, .a = dsl_let_bright_34 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Generated from effect: starfield */
+static void starfield_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer background */
+    const float dsl_let_ny_0 = (y / height);
+    const float dsl_let_grad_1 = (dsl_let_ny_0 * 0.060000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = 0.010000f, .g = 0.010000f, .b = (0.040000f + dsl_let_grad_1), .a = 1.000000f }, __dsl_out);
+    /* layer far_stars */
+    const float dsl_let_cell_x_2 = floorf((x * 0.500000f));
+    const float dsl_let_cell_y_3 = floorf((y * 0.500000f));
+    const float dsl_let_star_seed_4 = ((dsl_let_cell_x_2 * 31.170000f) + (dsl_let_cell_y_3 * 57.930000f));
+    const float dsl_let_presence_5 = dsl_hash01(dsl_let_star_seed_4);
+    const float dsl_let_flicker_6 = dsl_hash01((dsl_let_star_seed_4 + (floorf((time * 0.800000f)) * 11.300000f)));
+    const float dsl_let_bright_7 = (dsl_smoothstep(0.920000f, 1.000000f, dsl_let_presence_5) * (0.300000f + (0.700000f * dsl_let_flicker_6)));
+    const float dsl_let_tint_8 = dsl_hash01((dsl_let_star_seed_4 + 7.000000f));
+    const float dsl_let_r_9 = (dsl_let_bright_7 * (0.700000f + (0.300000f * dsl_let_tint_8)));
+    const float dsl_let_g_10 = (dsl_let_bright_7 * (0.700000f + (0.300000f * (1.000000f - dsl_let_tint_8))));
+    const float dsl_let_b_11 = dsl_let_bright_7;
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_9, .g = dsl_let_g_10, .b = dsl_let_b_11, .a = dsl_let_bright_7 }, __dsl_out);
+    /* layer mid_stars */
+    const float dsl_let_cell_x_12 = floorf((x * 0.330000f));
+    const float dsl_let_cell_y_13 = floorf((y * 0.330000f));
+    const float dsl_let_star_seed_14 = ((dsl_let_cell_x_12 * 43.710000f) + (dsl_let_cell_y_13 * 23.170000f));
+    const float dsl_let_presence_15 = dsl_hash01(dsl_let_star_seed_14);
+    const float dsl_let_twinkle_16 = ((sinf(((time * 2.500000f) + (dsl_hash01((dsl_let_star_seed_14 + 3.000000f)) * 6.28318530717958647692f))) * 0.500000f) + 0.500000f);
+    const float dsl_let_bright_17 = (dsl_smoothstep(0.950000f, 1.000000f, dsl_let_presence_15) * (0.500000f + (0.500000f * dsl_let_twinkle_16)));
+    const float dsl_let_warm_18 = dsl_hash01((dsl_let_star_seed_14 + 13.000000f));
+    const float dsl_let_r_19 = (dsl_let_bright_17 * (0.800000f + (0.200000f * dsl_let_warm_18)));
+    const float dsl_let_g_20 = (dsl_let_bright_17 * (0.850000f + (0.150000f * dsl_let_warm_18)));
+    const float dsl_let_b_21 = (dsl_let_bright_17 * (1.000000f - (0.200000f * dsl_let_warm_18)));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_19, .g = dsl_let_g_20, .b = dsl_let_b_21, .a = dsl_let_bright_17 }, __dsl_out);
+    /* layer bright_stars */
+    const float dsl_let_cell_x_22 = floorf((x * 0.200000f));
+    const float dsl_let_cell_y_23 = floorf((y * 0.200000f));
+    const float dsl_let_star_seed_24 = ((dsl_let_cell_x_22 * 71.310000f) + (dsl_let_cell_y_23 * 37.910000f));
+    const float dsl_let_presence_25 = dsl_hash01(dsl_let_star_seed_24);
+    const float dsl_let_twinkle_26 = powf(((sinf(((time * 1.800000f) + (dsl_hash01((dsl_let_star_seed_24 + 5.000000f)) * 6.28318530717958647692f))) * 0.500000f) + 0.500000f), 2.000000f);
+    const float dsl_let_bright_27 = (dsl_smoothstep(0.970000f, 1.000000f, dsl_let_presence_25) * (0.600000f + (0.400000f * dsl_let_twinkle_26)));
+    const float dsl_let_r_28 = dsl_let_bright_27;
+    const float dsl_let_g_29 = dsl_let_bright_27;
+    const float dsl_let_b_30 = dsl_let_bright_27;
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_28, .g = dsl_let_g_29, .b = dsl_let_b_30, .a = dsl_let_bright_27 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
 /* Generated from effect: tone_pulse */
 static void tone_pulse_eval_frame(float time, float frame) {
     const float dsl_param_base_freq_0 = 220.000000f;
@@ -632,7 +987,7 @@ static void tone_pulse_eval_pixel(float time, float frame, float x, float y, flo
 }
 
 /* Audio: generated from effect: tone_pulse */
-static float tone_pulse_eval_audio(float time, float seed) {
+static float tone_pulse_eval_audio(float time, float seed, float sample_rate, float *phasor_state) {
     const float dsl_param_base_freq_0 = 220.000000f;
     const float dsl_param_pulse_rate_1 = 2.000000f;
     float __dsl_audio_out = 0.0f;
@@ -650,24 +1005,33 @@ typedef struct {
     int has_frame_func;
     void (*eval_frame)(float time, float frame);
     int has_audio_func;
-    float (*eval_audio)(float time, float seed);
+    float (*eval_audio)(float time, float seed, float sample_rate, float *phasor_state);
+    int phasor_count;
 } dsl_shader_entry_t;
 
 const dsl_shader_entry_t dsl_shader_registry[] = {
-    { .name = "aurora", .folder = "/native", .eval_pixel = aurora_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "aurora-ribbons-classic", .folder = "/native", .eval_pixel = aurora_ribbons_classic_eval_pixel, .has_frame_func = 1, .eval_frame = aurora_ribbons_classic_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "campfire", .folder = "/native", .eval_pixel = campfire_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "chaos-nebula", .folder = "/native", .eval_pixel = chaos_nebula_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "dream-weaver", .folder = "/native", .eval_pixel = dream_weaver_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "gradient", .folder = "/native", .eval_pixel = gradient_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "infinite-lines", .folder = "/native", .eval_pixel = infinite_lines_eval_pixel, .has_frame_func = 1, .eval_frame = infinite_lines_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "primal-storm", .folder = "/native", .eval_pixel = primal_storm_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "rain-ripple", .folder = "/native", .eval_pixel = rain_ripple_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "soap-bubbles", .folder = "/native", .eval_pixel = soap_bubbles_eval_pixel, .has_frame_func = 1, .eval_frame = soap_bubbles_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float))0 },
-    { .name = "tone-pulse", .folder = "/native", .eval_pixel = tone_pulse_eval_pixel, .has_frame_func = 1, .eval_frame = tone_pulse_eval_frame, .has_audio_func = 1, .eval_audio = tone_pulse_eval_audio },
+    { .name = "aurora", .folder = "/native", .eval_pixel = aurora_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "aurora-ribbons-classic", .folder = "/native", .eval_pixel = aurora_ribbons_classic_eval_pixel, .has_frame_func = 1, .eval_frame = aurora_ribbons_classic_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "campfire", .folder = "/native", .eval_pixel = campfire_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "chaos-nebula", .folder = "/native", .eval_pixel = chaos_nebula_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "dream-weaver", .folder = "/native", .eval_pixel = dream_weaver_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "electric-arcs", .folder = "/native", .eval_pixel = electric_arcs_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "forest-wind", .folder = "/native", .eval_pixel = forest_wind_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 1, .eval_audio = forest_wind_eval_audio, .phasor_count = 0 },
+    { .name = "gradient", .folder = "/native", .eval_pixel = gradient_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "heartbeat-pulse", .folder = "/native", .eval_pixel = heartbeat_pulse_eval_pixel, .has_frame_func = 1, .eval_frame = heartbeat_pulse_eval_frame, .has_audio_func = 1, .eval_audio = heartbeat_pulse_eval_audio, .phasor_count = 0 },
+    { .name = "infinite-lines", .folder = "/native", .eval_pixel = infinite_lines_eval_pixel, .has_frame_func = 1, .eval_frame = infinite_lines_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "lava-lamp", .folder = "/native", .eval_pixel = lava_lamp_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "ocean-waves", .folder = "/native", .eval_pixel = ocean_waves_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "primal-storm", .folder = "/native", .eval_pixel = primal_storm_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "rain-matrix", .folder = "/native", .eval_pixel = rain_matrix_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "rain-ripple", .folder = "/native", .eval_pixel = rain_ripple_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "soap-bubbles", .folder = "/native", .eval_pixel = soap_bubbles_eval_pixel, .has_frame_func = 1, .eval_frame = soap_bubbles_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "spiral-galaxy", .folder = "/native", .eval_pixel = spiral_galaxy_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "starfield", .folder = "/native", .eval_pixel = starfield_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0 },
+    { .name = "tone-pulse", .folder = "/native", .eval_pixel = tone_pulse_eval_pixel, .has_frame_func = 1, .eval_frame = tone_pulse_eval_frame, .has_audio_func = 1, .eval_audio = tone_pulse_eval_audio, .phasor_count = 0 },
 };
 
-const int dsl_shader_registry_count = 11;
+const int dsl_shader_registry_count = 19;
 
 #include <string.h>
 

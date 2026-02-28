@@ -336,7 +336,7 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
         static uint32_t dither_state = 0x12345678U;
         for (uint32_t i = 0; i < count; i++) {
             float sample_time = time_seconds + (float)i * inv_sr;
-            float sample = state->active_native_shader->eval_audio(sample_time, state->native_shader_seed);
+            float sample = state->active_native_shader->eval_audio(sample_time, state->native_shader_seed, (float)sample_rate, state->phasor_state);
             /* Clamp to [-1, 1] */
             if (sample > 1.0f) sample = 1.0f;
             if (sample < -1.0f) sample = -1.0f;
@@ -741,6 +741,16 @@ static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state, co
     state->shader_source = FW_TCP_SHADER_SOURCE_NATIVE;
     state->active_native_shader = shader;
     state->native_shader_seed = fw_tcp_generate_seed();
+    /* Allocate phasor state for audio phase accumulators. */
+    if (state->phasor_state != NULL) {
+        free(state->phasor_state);
+        state->phasor_state = NULL;
+        state->phasor_state_count = 0;
+    }
+    if (shader->phasor_count > 0) {
+        state->phasor_state = (float *)calloc((size_t)shader->phasor_count, sizeof(float));
+        state->phasor_state_count = shader->phasor_count;
+    }
     state->shader_slow_frame_count = 0U;
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;

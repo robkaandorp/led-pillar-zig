@@ -991,6 +991,7 @@ fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) Runtim
         .pow => .{ .scalar = std.math.pow(f32, asScalar(args[0]), asScalar(args[1])) },
         .noise => .{ .scalar = sdf_common.noise2(asScalar(args[0]), asScalar(args[1])) },
         .noise3 => .{ .scalar = sdf_common.noise3(asScalar(args[0]), asScalar(args[1]), asScalar(args[2])) },
+        .phasor => .{ .scalar = 0.0 }, // TODO: phasor requires persistent state; returns 0 in bytecode runtime
         .vec2 => .{ .vec2 = .{ .x = asScalar(args[0]), .y = asScalar(args[1]) } },
         .rgba => .{ .rgba = .{
             .r = asScalar(args[0]),
