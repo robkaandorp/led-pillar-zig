@@ -44,6 +44,7 @@ const BytecodeInstruction = union(enum) {
     sub,
     mul,
     div,
+    mod,
     call_builtin: BuiltinCall,
 
     const BuiltinCall = struct {
@@ -113,6 +114,7 @@ const BytecodeInstructionOpcode = enum(u8) {
     sub = 5,
     mul = 6,
     div = 7,
+    mod = 9,
     call_builtin = 8,
 };
 
@@ -399,6 +401,12 @@ pub const Evaluator = struct {
                     stack_len -= 1;
                     self.expr_stack[stack_len - 1] = .{ .scalar = lhs / rhs };
                 },
+                .mod => {
+                    const rhs = asScalar(self.expr_stack[stack_len - 1]);
+                    const lhs = asScalar(self.expr_stack[stack_len - 2]);
+                    stack_len -= 1;
+                    self.expr_stack[stack_len - 1] = .{ .scalar = @rem(lhs, rhs) };
+                },
                 .call_builtin => |call| {
                     const arg_count = @as(usize, call.arg_count);
                     const arg_start = stack_len - arg_count;
@@ -675,6 +683,7 @@ fn emitExprBytecode(
                 .sub => .sub,
                 .mul => .mul,
                 .div => .div,
+                .mod => .mod,
             };
             try instructions.append(allocator, op);
         },
@@ -697,7 +706,7 @@ fn computeExprMaxStackDepth(instructions: []const BytecodeInstruction) usize {
         switch (instruction) {
             .push_literal, .push_slot => depth += 1,
             .negate => {},
-            .add, .sub, .mul, .div => depth -= 1,
+            .add, .sub, .mul, .div, .mod => depth -= 1,
             .call_builtin => |call| {
                 depth = depth - @as(usize, call.arg_count) + 1;
             },
@@ -875,6 +884,7 @@ fn serializeCompiledExpr(writer: anytype, expr: *const CompiledExpr) !void {
             .sub => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.sub)),
             .mul => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.mul)),
             .div => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.div)),
+            .mod => try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.mod)),
             .call_builtin => |call| {
                 try writeU8(writer, @intFromEnum(BytecodeInstructionOpcode.call_builtin));
                 try writeU8(writer, @as(u8, @intCast(@intFromEnum(call.builtin))));
@@ -978,6 +988,9 @@ fn evalBuiltin(builtin: dsl_parser.BuiltinId, args: []const RuntimeValue) Runtim
             scalarToI32(asScalar(args[1])),
             scalarToU32(asScalar(args[2])),
         ) },
+        .pow => .{ .scalar = std.math.pow(f32, asScalar(args[0]), asScalar(args[1])) },
+        .noise => .{ .scalar = sdf_common.noise2(asScalar(args[0]), asScalar(args[1])) },
+        .noise3 => .{ .scalar = sdf_common.noise3(asScalar(args[0]), asScalar(args[1]), asScalar(args[2])) },
         .vec2 => .{ .vec2 = .{ .x = asScalar(args[0]), .y = asScalar(args[1]) } },
         .rgba => .{ .rgba = .{
             .r = asScalar(args[0]),
@@ -1188,6 +1201,39 @@ test "Evaluator evaluates v1 builtin expressions" {
         try evalScalarExpression("hashCoords01(1.0, 2.0, 3.0)", inputs),
         0.0001,
     );
+}
+
+test "Evaluator evaluates pow, modulo, noise, and noise3" {
+    const inputs = PixelInputs{
+        .time = 0.0,
+        .frame = 0.0,
+        .x = 0.0,
+        .y = 0.0,
+        .width = 30.0,
+        .height = 40.0,
+        .seed = 0.0,
+    };
+
+    // pow(0.5, 2.0) == 0.25 (using values in [0,1] since blend clamps)
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), try evalScalarExpression("pow(0.5, 2.0)", inputs), 0.0001);
+
+    // 5.0 % 3.0 == 2.0 -> clamped to 1.0 by blend; use fract-range values instead
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), try evalScalarExpression("0.5 % 0.8", inputs), 0.0001);
+
+    // Verify modulo with larger values via division to stay in [0,1]
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), try evalScalarExpression("5.2 % 1.0", inputs), 0.001);
+
+    // noise returns a value in [-1, 1]
+    const n2 = try evalScalarExpression("noise(1.0, 2.0)", inputs);
+    try std.testing.expect(n2 >= -1.0 and n2 <= 1.0);
+
+    // noise3 returns a value in [-1, 1]
+    const n3 = try evalScalarExpression("noise3(1.0, 2.0, 3.0)", inputs);
+    try std.testing.expect(n3 >= -1.0 and n3 <= 1.0);
+
+    // noise is deterministic
+    const n2b = try evalScalarExpression("noise(1.0, 2.0)", inputs);
+    try std.testing.expectApproxEqAbs(n2, n2b, 0.0);
 }
 
 test "Evaluator resolves seed input" {

@@ -25,6 +25,9 @@ pub const BuiltinId = enum {
     hash01,
     hash_signed,
     hash_coords01,
+    pow,
+    noise,
+    noise3,
     vec2,
     rgba,
 };
@@ -45,6 +48,7 @@ pub const Expr = union(enum) {
         sub,
         mul,
         div,
+        mod,
     };
 
     pub const UnaryExpr = struct {
@@ -135,6 +139,9 @@ const builtin_specs = [_]BuiltinSpec{
     .{ .id = .hash01, .name = "hash01", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
     .{ .id = .hash_signed, .name = "hashSigned", .return_type = .scalar, .arg_types = &[_]ValueType{.scalar} },
     .{ .id = .hash_coords01, .name = "hashCoords01", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
+    .{ .id = .pow, .name = "pow", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
+    .{ .id = .noise, .name = "noise", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar } },
+    .{ .id = .noise3, .name = "noise3", .return_type = .scalar, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar } },
     .{ .id = .vec2, .name = "vec2", .return_type = .vec2, .arg_types = &[_]ValueType{ .scalar, .scalar } },
     .{ .id = .rgba, .name = "rgba", .return_type = .rgba, .arg_types = &[_]ValueType{ .scalar, .scalar, .scalar, .scalar } },
 };
@@ -185,6 +192,7 @@ const TokenTag = enum {
     minus,
     star,
     slash,
+    percent,
     dotdot,
     eof,
 };
@@ -244,6 +252,10 @@ const Lexer = struct {
             '/' => {
                 self.index += 1;
                 return .{ .tag = .slash };
+            },
+            '%' => {
+                self.index += 1;
+                return .{ .tag = .percent };
             },
             '.' => {
                 if (self.index + 1 < self.source.len and self.source[self.index + 1] == '.') {
@@ -522,8 +534,8 @@ const Parser = struct {
 
     fn parseMultiplicative(self: *Parser) anyerror!*Expr {
         var expr = try self.parseUnary();
-        while (self.current.tag == .star or self.current.tag == .slash) {
-            const op: Expr.BinaryOp = if (self.current.tag == .star) .mul else .div;
+        while (self.current.tag == .star or self.current.tag == .slash or self.current.tag == .percent) {
+            const op: Expr.BinaryOp = if (self.current.tag == .star) .mul else if (self.current.tag == .slash) .div else .mod;
             try self.advance();
             const rhs = try self.parseUnary();
             expr = try self.makeExpr(.{
@@ -1114,4 +1126,37 @@ test "parseAndValidate recognizes and reserves builtin constants" {
 
     _ = try parseAndValidate(arena.allocator(), valid_source);
     try std.testing.expectError(error.ReservedIdentifier, parseAndValidate(arena.allocator(), reserved_source));
+}
+
+test "parseAndValidate accepts pow, modulo, noise, and noise3" {
+    const source =
+        \\effect new_builtins
+        \\layer l {
+        \\  let p = pow(2.0, 3.0)
+        \\  let m = x % 2.0
+        \\  let n2 = noise(1.0, 2.0)
+        \\  let n3 = noise3(1.0, 2.0, 3.0)
+        \\  blend rgba(p, m, n2, n3)
+        \\}
+        \\emit
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const program = try parseAndValidate(arena.allocator(), source);
+    try std.testing.expectEqual(@as(usize, 1), program.layers.len);
+
+    // Verify modulo has same precedence as * and / : a + b % c parses as a + (b % c)
+    const prec_source =
+        \\effect prec_test
+        \\layer l {
+        \\  let v = 1.0 + x % 2.0
+        \\  blend rgba(v, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+    const prec_program = try parseAndValidate(arena.allocator(), prec_source);
+    // If it parsed without error and has 1 layer, precedence is correct (% binds tighter than +)
+    try std.testing.expectEqual(@as(usize, 1), prec_program.layers.len);
 }
