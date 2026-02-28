@@ -458,6 +458,7 @@ static void fw_tcp_shader_task(void *arg) {
     const int64_t shader_time_start_us = esp_timer_get_time();
     uint32_t frame_counter = 0U;
     const int64_t frame_interval_us = (int64_t)FW_SHADER_FRAME_INTERVAL_MS * 1000;
+    int64_t last_frame_us = 0;
 
     /* Subscribe to task watchdog so the IDLE task on this core is not
      * blamed for starvation while the shader loop runs continuously. */
@@ -468,6 +469,17 @@ static void fw_tcp_shader_task(void *arg) {
         if (state->state_lock != NULL && xSemaphoreTake(state->state_lock, portMAX_DELAY) == pdTRUE) {
             if (state->shader_active) {
                 const int64_t now_us = esp_timer_get_time();
+
+                /* --- EMA FPS measurement --- */
+                if (last_frame_us > 0) {
+                    const int64_t frame_duration_us = now_us - last_frame_us;
+                    if (frame_duration_us > 0) {
+                        const float instant_fps = 1000000.0f / (float)frame_duration_us;
+                        const float alpha = 0.05f;
+                        state->measured_fps = alpha * instant_fps + (1.0f - alpha) * state->measured_fps;
+                    }
+                }
+                last_frame_us = now_us;
                 const float time_seconds = (float)(now_us - shader_time_start_us) / 1000000.0f;
                 const int64_t render_start_us = now_us;
                 esp_err_t render_err = fw_tcp_render_shader_frame_locked(state, time_seconds, frame_counter);
@@ -492,6 +504,8 @@ static void fw_tcp_shader_task(void *arg) {
             } else {
                 frame_counter = 0U;
                 state->shader_frame_count = 0U;
+                state->measured_fps = 0.0f;
+                last_frame_us = 0;
             }
             xSemaphoreGive(state->state_lock);
         }
@@ -691,6 +705,7 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
     state->shader_slow_frame_count = 0U;
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
+    state->measured_fps = 0.0f;
     state->uniform_last_color_valid = false;
     xSemaphoreGive(state->state_lock);
     return FW_TCP_V3_STATUS_OK;
@@ -729,6 +744,7 @@ static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state, co
     state->shader_slow_frame_count = 0U;
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
+    state->measured_fps = 0.0f;
     state->uniform_last_color_valid = false;
     xSemaphoreGive(state->state_lock);
 
@@ -755,6 +771,7 @@ static uint8_t fw_tcp_handle_v3_stop_shader(fw_tcp_server_state_t *state) {
     state->shader_slow_frame_count = 0U;
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
+    state->measured_fps = 0.0f;
     state->uniform_last_color_valid = false;
 #if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
     if (fw_audio_output_is_active()) {

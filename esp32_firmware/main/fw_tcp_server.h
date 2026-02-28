@@ -41,6 +41,7 @@ typedef struct fw_tcp_server_state {
     uint32_t shader_slow_frame_count;
     uint32_t shader_last_slow_frame_ms;
     uint32_t shader_frame_count;
+    float measured_fps;
     bool uniform_last_color_valid;
     uint8_t uniform_last_r;
     uint8_t uniform_last_g;

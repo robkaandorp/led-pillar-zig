@@ -392,7 +392,7 @@ static void cmd_help(int sock) {
         "  pwd             Print working directory\r\n"
         "  run <name>      Run a shader by name\r\n"
         "  stop            Stop the running shader\r\n"
-        "  top             Show shader status\r\n"
+        "  top             Show shader status (live, any key exits)\r\n"
         "  help            Show this help\r\n"
         "  exit            Disconnect (or Ctrl+D)\r\n");
 }
@@ -515,6 +515,7 @@ static void cmd_run(int sock, fw_tcp_server_state_t *state, const char *cwd, con
     state->native_shader_seed = (float)(esp_random() >> 8) / 16777216.0f;
     state->shader_frame_count = 0;
     state->shader_slow_frame_count = 0;
+    state->measured_fps = 0.0f;
     xSemaphoreGive(state->state_lock);
 
     char out[TELNET_OUT_MAX];
@@ -532,34 +533,71 @@ static void cmd_stop(int sock, fw_tcp_server_state_t *state) {
     telnet_send_str(sock, "Shader stopped.\r\n");
 }
 
+static bool telnet_key_available(int sock) {
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(sock, &fds);
+    int ret = select(sock + 1, &fds, NULL, NULL, &tv);
+    return ret > 0;
+}
+
 static void cmd_top(int sock, fw_tcp_server_state_t *state) {
     char out[TELNET_OUT_MAX];
-    const char *name = "(none)";
-    const char *status = "stopped";
-    uint32_t frames = 0;
-    uint32_t slow = 0;
-    bool has_audio = false;
 
-    xSemaphoreTake(state->state_lock, portMAX_DELAY);
-    if (state->shader_active && state->active_native_shader != NULL) {
-        name = state->active_native_shader->name;
-        status = "running";
-        has_audio = state->active_native_shader->has_audio_func != 0;
+    while (true) {
+        const char *name = "(none)";
+        const char *status = "stopped";
+        uint32_t frames = 0;
+        uint32_t slow = 0;
+        float fps = 0.0f;
+        bool has_audio = false;
+
+        xSemaphoreTake(state->state_lock, portMAX_DELAY);
+        if (state->shader_active && state->active_native_shader != NULL) {
+            name = state->active_native_shader->name;
+            status = "running";
+            has_audio = state->active_native_shader->has_audio_func != 0;
+        }
+        frames = state->shader_frame_count;
+        slow = state->shader_slow_frame_count;
+        fps = state->measured_fps;
+        xSemaphoreGive(state->state_lock);
+
+        uint32_t free_heap = esp_get_free_heap_size();
+
+        /* Clear screen and home cursor */
+        telnet_send_str(sock, "\033[2J\033[H");
+
+        int n = snprintf(out, sizeof(out),
+            "Shader:      %s\r\n"
+            "Status:      %s\r\n"
+            "FPS:         %.1f\r\n"
+            "Frames:      %" PRIu32 "\r\n"
+            "Slow frames: %" PRIu32 "\r\n"
+            "Audio:       %s\r\n"
+            "Free heap:   %" PRIu32 "\r\n"
+            "\r\n"
+            "Press any key to exit...\r\n",
+            name, status, (double)fps, frames, slow,
+            has_audio ? "active" : "none",
+            free_heap);
+        if (n > 0 && !telnet_send(sock, out, (size_t)n)) break;
+
+        /* Wait ~1 second, checking for keypress every 100ms */
+        for (int i = 0; i < 10; i++) {
+            if (telnet_key_available(sock)) goto done;
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
     }
-    frames = state->shader_frame_count;
-    slow = state->shader_slow_frame_count;
-    xSemaphoreGive(state->state_lock);
 
-    int n = snprintf(out, sizeof(out),
-        "Shader:      %s\r\n"
-        "Status:      %s\r\n"
-        "FPS:         40.0\r\n"
-        "Frames:      %" PRIu32 "\r\n"
-        "Slow frames: %" PRIu32 "\r\n"
-        "Audio:       %s\r\n",
-        name, status, frames, slow,
-        has_audio ? "active" : "none");
-    if (n > 0) telnet_send(sock, out, (size_t)n);
+done:
+    /* Drain any pending input bytes */
+    if (telnet_key_available(sock)) {
+        uint8_t drain[16];
+        recv(sock, drain, sizeof(drain), MSG_DONTWAIT);
+    }
+    telnet_send_str(sock, "\r\n");
 }
 
 /* --- Command dispatch ---------------------------------------------------- */
