@@ -160,7 +160,8 @@ static const dsl_shader_entry_t *vfs_find_shader(const char *dir, const char *na
 
 /* --- Tab completion ------------------------------------------------------ */
 
-/// Count command/entry matches for prefix; store single match in out_match.
+/// Count command/entry matches for prefix; store last single match in out_match.
+/// When multiple matches exist, out_match contains their longest common prefix.
 static int tab_complete_entries(const char *cwd, const char *prefix, bool dirs_only,
                                 char *out_match, size_t out_match_len) {
     int count = 0;
@@ -172,7 +173,15 @@ static int tab_complete_entries(const char *cwd, const char *prefix, bool dirs_o
             if (strcmp(dsl_shader_registry[i].folder, cwd) != 0) continue;
             if (strncmp(dsl_shader_registry[i].name, prefix, strlen(prefix)) == 0) {
                 count++;
-                strlcpy(out_match, dsl_shader_registry[i].name, out_match_len);
+                if (count == 1) {
+                    strlcpy(out_match, dsl_shader_registry[i].name, out_match_len);
+                } else {
+                    // Shrink out_match to LCP with this match
+                    const char *m = dsl_shader_registry[i].name;
+                    size_t j = 0;
+                    while (out_match[j] && m[j] && out_match[j] == m[j]) j++;
+                    out_match[j] = '\0';
+                }
             }
         }
     }
@@ -235,7 +244,14 @@ static int tab_complete_entries(const char *cwd, const char *prefix, bool dirs_o
         if (seen_count < 32) strlcpy(seen[seen_count++], child_name, 32);
 
         count++;
-        strlcpy(out_match, child_name, out_match_len);
+        if (count == 1) {
+            strlcpy(out_match, child_name, out_match_len);
+        } else {
+            // Shrink out_match to LCP with this match
+            size_t j = 0;
+            while (out_match[j] && child_name[j] && out_match[j] == child_name[j]) j++;
+            out_match[j] = '\0';
+        }
     }
 
     return count;
@@ -372,8 +388,6 @@ static void handle_tab(int sock, char *line, size_t *line_len, const char *cwd) 
         const char *last_slash = strrchr(arg, '/');
         char resolve_dir[TELNET_CWD_MAX];
         const char *name_prefix;
-        const char *arg_dir_prefix = ""; // literal text before name_prefix in arg
-        size_t arg_dir_len = 0;
 
         if (last_slash != NULL) {
             // Has path component — resolve directory part relative to cwd
@@ -387,8 +401,6 @@ static void handle_tab(int sock, char *line, size_t *line_len, const char *cwd) 
                 return; // Invalid directory path, no completions
             }
             name_prefix = last_slash + 1;
-            arg_dir_prefix = arg;
-            arg_dir_len = (size_t)(last_slash - arg) + 1; // includes trailing '/'
         } else {
             strlcpy(resolve_dir, cwd, sizeof(resolve_dir));
             name_prefix = arg;
@@ -408,6 +420,19 @@ static void handle_tab(int sock, char *line, size_t *line_len, const char *cwd) 
                 telnet_send(sock, suffix, suffix_len);
             }
         } else if (count > 1) {
+            // Expand to longest common prefix before listing matches
+            size_t lcp_len = strlen(match_buf);
+            size_t prefix_len = strlen(name_prefix);
+            if (lcp_len > prefix_len) {
+                const char *suffix = match_buf + prefix_len;
+                size_t suffix_len = lcp_len - prefix_len;
+                if (*line_len + suffix_len < TELNET_LINE_MAX) {
+                    memcpy(line + *line_len, suffix, suffix_len);
+                    *line_len += suffix_len;
+                    line[*line_len] = '\0';
+                    telnet_send(sock, suffix, suffix_len);
+                }
+            }
             tab_print_matches(sock, resolve_dir, name_prefix, dirs_only);
             telnet_send_prompt(sock, cwd);
             telnet_send(sock, line, *line_len);
