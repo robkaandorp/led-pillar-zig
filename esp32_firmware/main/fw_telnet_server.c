@@ -797,6 +797,9 @@ static void cmd_top(int sock, fw_tcp_server_state_t *state) {
         uint32_t slow = 0;
         float fps = 0.0f;
         bool has_audio = false;
+        float display_us = 0.0f;
+        float audio_us = 0.0f;
+        uint32_t target_fps = 0;
 
         xSemaphoreTake(state->state_lock, portMAX_DELAY);
         if (state->shader_active && state->active_native_shader != NULL) {
@@ -807,9 +810,19 @@ static void cmd_top(int sock, fw_tcp_server_state_t *state) {
         frames = state->shader_frame_count;
         slow = state->shader_slow_frame_count;
         fps = state->measured_fps;
+        display_us = state->render_time_display_us;
+        audio_us = state->render_time_audio_us;
+        target_fps = state->target_fps;
         xSemaphoreGive(state->state_lock);
 
         uint32_t free_heap = esp_get_free_heap_size();
+
+        /* Compute render budget */
+        float display_ms = display_us / 1000.0f;
+        float audio_ms = audio_us / 1000.0f;
+        float combined_ms = display_ms + audio_ms;
+        float target_frame_ms = target_fps > 0 ? 1000.0f / (float)target_fps : 0.0f;
+        float percent = target_frame_ms > 0.0f ? combined_ms / target_frame_ms * 100.0f : 0.0f;
 
         /* Clear screen and home cursor */
         telnet_send_str(sock, "\033[2J\033[H");
@@ -821,11 +834,14 @@ static void cmd_top(int sock, fw_tcp_server_state_t *state) {
             "Frames:      %" PRIu32 "\r\n"
             "Slow frames: %" PRIu32 "\r\n"
             "Audio:       %s\r\n"
+            "Render:      %.1f ms display + %.1f ms audio = %.1f ms (%.1f%% of %.1f ms)\r\n"
             "Free heap:   %" PRIu32 "\r\n"
             "\r\n"
             "Press any key to exit...\r\n",
             name, status, (double)fps, frames, slow,
             has_audio ? "active" : "none",
+            (double)display_ms, (double)audio_ms, (double)combined_ms,
+            (double)percent, (double)target_frame_ms,
             free_heap);
         if (n > 0 && !telnet_send(sock, out, (size_t)n)) break;
 
@@ -891,7 +907,7 @@ done:
         uint8_t drain[16];
         recv(sock, drain, sizeof(drain), MSG_DONTWAIT);
     }
-    telnet_send_str(sock, "\r\n--- Log stopped ---\r\n");
+    telnet_send_str(sock, "\033[0m\r\n--- Log stopped ---\r\n");
 }
 
 // Returns true if the client should be disconnected.

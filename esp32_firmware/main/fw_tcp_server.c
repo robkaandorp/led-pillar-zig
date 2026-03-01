@@ -305,6 +305,7 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
 
     state->uniform_last_color_valid = false;
 
+    const int64_t display_start_us = esp_timer_get_time();
     int rc = fw_native_shader_render_frame(
         state->active_native_shader,
         time_seconds,
@@ -319,14 +320,19 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
     if (rc != 0) {
         return ESP_FAIL;
     }
+    esp_err_t push_err = fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
+    const float display_us = (float)(esp_timer_get_time() - display_start_us);
+    state->render_time_display_us = state->render_time_display_us * 0.9f + display_us * 0.1f;
 
     /* Generate audio samples if this shader has an audio function. */
+    float audio_us = 0.0f;
 #if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
     if (state->active_native_shader != NULL && state->active_native_shader->has_audio_func &&
         state->active_native_shader->eval_audio != NULL) {
         if (!fw_audio_output_is_active()) {
             fw_audio_output_start();
         }
+        const int64_t audio_start_us = esp_timer_get_time();
         const uint32_t sample_rate = fw_audio_output_get_sample_rate();
         const uint32_t samples_per_frame = sample_rate / 40U;
         uint8_t audio_buf[1024];
@@ -353,12 +359,14 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
             audio_buf[i] = (uint8_t)quantized;
         }
         fw_audio_output_push(audio_buf, count, 25);
+        audio_us = (float)(esp_timer_get_time() - audio_start_us);
     } else if (fw_audio_output_is_active()) {
         fw_audio_output_stop();
     }
 #endif
+    state->render_time_audio_us = state->render_time_audio_us * 0.9f + audio_us * 0.1f;
 
-    return fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
+    return push_err;
 }
 
 static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state, float time_seconds, uint32_t frame_counter) {
@@ -378,6 +386,7 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
         return ESP_FAIL;
     }
 
+    const int64_t bc_render_start = esp_timer_get_time();
     const size_t bytes_per_pixel = 3U;
     const size_t required_len = (size_t)state->led_count * bytes_per_pixel;
     if (required_len > state->frame_buffer_len) {
@@ -402,6 +411,9 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
             state->uniform_last_g = g;
             state->uniform_last_b = b;
         }
+        const float bc_display_us = (float)(esp_timer_get_time() - bc_render_start);
+        state->render_time_display_us = state->render_time_display_us * 0.9f + bc_display_us * 0.1f;
+        state->render_time_audio_us = state->render_time_audio_us * 0.9f;
         return push_err;
     }
     state->uniform_last_color_valid = false;
@@ -450,11 +462,16 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
                  (long long)(vm_compute_us / 1200));
     }
 
-    return fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
+    esp_err_t push_err = fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
+    const float bc_total_us = (float)(esp_timer_get_time() - bc_render_start);
+    state->render_time_display_us = state->render_time_display_us * 0.9f + bc_total_us * 0.1f;
+    state->render_time_audio_us = state->render_time_audio_us * 0.9f;
+    return push_err;
 }
 
 static void fw_tcp_shader_task(void *arg) {
     fw_tcp_server_state_t *state = (fw_tcp_server_state_t *)arg;
+    state->target_fps = 1000U / FW_SHADER_FRAME_INTERVAL_MS;
     const int64_t shader_time_start_us = esp_timer_get_time();
     uint32_t frame_counter = 0U;
     const int64_t frame_interval_us = (int64_t)FW_SHADER_FRAME_INTERVAL_MS * 1000;
@@ -505,6 +522,8 @@ static void fw_tcp_shader_task(void *arg) {
                 frame_counter = 0U;
                 state->shader_frame_count = 0U;
                 state->measured_fps = 0.0f;
+                state->render_time_display_us = 0.0f;
+                state->render_time_audio_us = 0.0f;
                 last_frame_us = 0;
             }
             xSemaphoreGive(state->state_lock);
@@ -721,6 +740,8 @@ static uint8_t fw_tcp_handle_v3_activate(fw_tcp_server_state_t *state) {
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
     state->measured_fps = 0.0f;
+    state->render_time_display_us = 0.0f;
+    state->render_time_audio_us = 0.0f;
     state->uniform_last_color_valid = false;
     if (state->phasor_state != NULL) {
         free(state->phasor_state);
@@ -775,6 +796,8 @@ static uint8_t fw_tcp_handle_v3_activate_native(fw_tcp_server_state_t *state, co
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
     state->measured_fps = 0.0f;
+    state->render_time_display_us = 0.0f;
+    state->render_time_audio_us = 0.0f;
     state->uniform_last_color_valid = false;
     xSemaphoreGive(state->state_lock);
 
@@ -802,6 +825,8 @@ static uint8_t fw_tcp_handle_v3_stop_shader(fw_tcp_server_state_t *state) {
     state->shader_last_slow_frame_ms = 0U;
     state->shader_frame_count = 0U;
     state->measured_fps = 0.0f;
+    state->render_time_display_us = 0.0f;
+    state->render_time_audio_us = 0.0f;
     state->uniform_last_color_valid = false;
     if (state->phasor_state != NULL) {
         free(state->phasor_state);
