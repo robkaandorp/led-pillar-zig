@@ -78,8 +78,12 @@ static void telnet_send_prompt(int sock, const char *cwd) {
 /// Valid directories: "/" and any unique folder from the shader registry.
 static bool vfs_is_dir(const char *path) {
     if (strcmp(path, "/") == 0) return true;
+    size_t plen = strlen(path);
     for (int i = 0; i < dsl_shader_registry_count; i++) {
-        if (strcmp(dsl_shader_registry[i].folder, path) == 0) return true;
+        const char *f = dsl_shader_registry[i].folder;
+        // Exact match (leaf directory) or prefix match (intermediate directory)
+        if (strcmp(f, path) == 0) return true;
+        if (strncmp(f, path, plen) == 0 && f[plen] == '/') return true;
     }
     return false;
 }
@@ -176,7 +180,7 @@ static int tab_complete_entries(const char *cwd, const char *prefix, bool dirs_o
     // Match subdirectory names visible from cwd
     // A subdirectory is a folder that starts with cwd + "/" and has exactly one more component
     size_t cwd_len = strlen(cwd);
-    const char *seen[32];
+    char seen[32][32];
     int seen_count = 0;
     for (int i = 0; i < dsl_shader_registry_count; i++) {
         const char *folder = dsl_shader_registry[i].folder;
@@ -228,7 +232,7 @@ static int tab_complete_entries(const char *cwd, const char *prefix, bool dirs_o
             if (strcmp(seen[s], child_name) == 0) { dup = true; break; }
         }
         if (dup) continue;
-        if (seen_count < 32) seen[seen_count++] = child_name;
+        if (seen_count < 32) strlcpy(seen[seen_count++], child_name, 32);
 
         count++;
         strlcpy(out_match, child_name, out_match_len);
@@ -252,7 +256,7 @@ static void tab_print_matches(int sock, const char *cwd, const char *prefix, boo
 
     // Subdirectories (same logic as above, deduplicated)
     size_t cwd_len = strlen(cwd);
-    const char *seen[32];
+    char seen[32][32];
     int seen_count = 0;
     for (int i = 0; i < dsl_shader_registry_count; i++) {
         const char *folder = dsl_shader_registry[i].folder;
@@ -296,7 +300,7 @@ static void tab_print_matches(int sock, const char *cwd, const char *prefix, boo
             if (strcmp(seen[s], child_name) == 0) { dup = true; break; }
         }
         if (dup) continue;
-        if (seen_count < 32) seen[seen_count++] = child_name;
+        if (seen_count < 32) strlcpy(seen[seen_count++], child_name, 32);
 
         telnet_send_str(sock, child_name);
         telnet_send_str(sock, "/\r\n");
@@ -408,7 +412,7 @@ static void cmd_ls(int sock, const char *cwd) {
 
     // List subdirectories visible from cwd
     size_t cwd_len = strlen(cwd);
-    const char *seen[32];
+    char seen[32][32];
     int seen_count = 0;
 
     for (int i = 0; i < dsl_shader_registry_count; i++) {
@@ -452,7 +456,7 @@ static void cmd_ls(int sock, const char *cwd) {
             if (strcmp(seen[s], child_name) == 0) { dup = true; break; }
         }
         if (dup) continue;
-        if (seen_count < 32) seen[seen_count++] = child_name;
+        if (seen_count < 32) strlcpy(seen[seen_count++], child_name, 32);
 
         int n = snprintf(out, sizeof(out), "%-25s [dir]\r\n", child_name);
         if (n > 0) telnet_send(sock, out, (size_t)n);
