@@ -646,10 +646,42 @@ static void cmd_run(int sock, fw_tcp_server_state_t *state, const char *cwd, con
         return;
     }
 
-    const dsl_shader_entry_t *entry = vfs_find_shader(cwd, name);
+    const dsl_shader_entry_t *entry = NULL;
+
+    // If name contains '/', treat as path: split into folder + shader name
+    const char *last_slash = strrchr(name, '/');
+    if (last_slash != NULL) {
+        char folder[TELNET_CWD_MAX];
+        size_t dir_len = (size_t)(last_slash - name);
+        if (dir_len == 0) {
+            strlcpy(folder, "/", sizeof(folder));
+        } else if (name[0] == '/') {
+            // Absolute path
+            if (dir_len >= sizeof(folder)) dir_len = sizeof(folder) - 1;
+            memcpy(folder, name, dir_len);
+            folder[dir_len] = '\0';
+        } else {
+            // Relative path — resolve against cwd
+            char dir_part[TELNET_CWD_MAX];
+            if (dir_len >= sizeof(dir_part)) dir_len = sizeof(dir_part) - 1;
+            memcpy(dir_part, name, dir_len);
+            dir_part[dir_len] = '\0';
+            if (!vfs_resolve(cwd, dir_part, folder, sizeof(folder))) {
+                char out[TELNET_OUT_MAX];
+                int n = snprintf(out, sizeof(out), "run: invalid path: %s\r\n", name);
+                if (n > 0) telnet_send(sock, out, (size_t)n);
+                return;
+            }
+        }
+        entry = vfs_find_shader(folder, last_slash + 1);
+    } else {
+        entry = vfs_find_shader(cwd, name);
+    }
+
     if (entry == NULL) {
-        // Try absolute lookup by name alone
-        entry = dsl_shader_find(name);
+        // Fallback: lookup by name alone (ignore path)
+        const char *bare_name = last_slash ? last_slash + 1 : name;
+        entry = dsl_shader_find(bare_name);
     }
     if (entry == NULL) {
         char out[TELNET_OUT_MAX];
@@ -692,7 +724,7 @@ static bool telnet_key_available(int sock) {
         int ret = select(sock + 1, &fds, NULL, NULL, &tv);
         if (ret <= 0) return false;
 
-        // Peek at next byte — skip IAC negotiation sequences
+        // Peek at next byte — skip IAC and ESC sequences
         uint8_t peek;
         int n = recv(sock, &peek, 1, MSG_PEEK);
         if (n <= 0) return false;
@@ -719,12 +751,44 @@ static bool telnet_key_available(int sock) {
             continue; // Check again for real data
         }
 
-        return true; // Non-IAC data available
+        if (peek == 0x1B) {
+            // Consume ANSI escape sequence (ESC [ ... final_byte)
+            recv(sock, &peek, 1, 0); // consume ESC
+            uint8_t next;
+            if (recv(sock, &next, 1, MSG_DONTWAIT) > 0) {
+                if (next == '[') {
+                    // CSI sequence: consume until 0x40-0x7E (final byte)
+                    uint8_t csi;
+                    while (recv(sock, &csi, 1, MSG_DONTWAIT) > 0) {
+                        if (csi >= 0x40 && csi <= 0x7E) break;
+                    }
+                }
+                // Otherwise single ESC+char — consumed
+            }
+            continue; // Check again for real data
+        }
+
+        return true; // Non-IAC, non-ESC data available
+    }
+}
+
+// Drain any pending telnet negotiation/escape data with a brief grace period.
+// Call before entering top/log loops to let slow clients finish negotiating.
+static void telnet_drain_pending(int sock) {
+    for (int i = 0; i < 5; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        // Drain all IAC/ESC sequences and any stale bytes
+        while (telnet_key_available(sock)) {
+            uint8_t drain[32];
+            recv(sock, drain, sizeof(drain), MSG_DONTWAIT);
+        }
     }
 }
 
 static void cmd_top(int sock, fw_tcp_server_state_t *state) {
     char out[TELNET_OUT_MAX];
+
+    telnet_drain_pending(sock);
 
     while (true) {
         const char *name = "(none)";
@@ -786,6 +850,7 @@ static void cmd_log(int sock) {
     size_t read_pos = 0;
     bool first_call = true;
 
+    telnet_drain_pending(sock);
     telnet_send_str(sock, "--- Log output (press any key to stop) ---\r\n");
 
     while (true) {
