@@ -22,3 +22,6 @@ CONFIG_FW_WIFI_AP_SSID="led-pillar"
 CONFIG_FW_WIFI_AP_PASSWORD="ledpillar"
 CONFIG_FW_WIFI_AP_MAX_CONN=2
 CONFIG_FW_LED_GAMMA_X100=280
+# Shader task monopolises core 1 at high priority; IDLE1 never runs.
+# Disable its watchdog check to avoid spurious triggers on heavy shaders.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
