@@ -26,6 +26,97 @@ static const char *TAG = "fw_telnet";
 #define TELNET_TASK_STACK  6144
 #define TELNET_TASK_PRIO   3
 
+/* --- Log ring buffer ----------------------------------------------------- */
+
+#define LOG_RINGBUF_SIZE   8192
+
+static char s_log_ringbuf[LOG_RINGBUF_SIZE];
+static size_t s_log_head = 0;   // next write position
+static size_t s_log_count = 0;  // bytes stored (max LOG_RINGBUF_SIZE)
+static SemaphoreHandle_t s_log_mutex = NULL;
+static vprintf_like_t s_orig_vprintf = NULL;
+
+// Custom vprintf: writes to ring buffer AND original UART output.
+static int log_ringbuf_vprintf(const char *fmt, va_list args) {
+    // Format into a stack buffer
+    char buf[256];
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (len <= 0) {
+        return s_orig_vprintf ? s_orig_vprintf(fmt, args) : len;
+    }
+    if ((size_t)len >= sizeof(buf)) len = (int)(sizeof(buf) - 1);
+
+    // Write to ring buffer under lock
+    if (s_log_mutex != NULL && xSemaphoreTake(s_log_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        for (int i = 0; i < len; i++) {
+            s_log_ringbuf[s_log_head] = buf[i];
+            s_log_head = (s_log_head + 1) % LOG_RINGBUF_SIZE;
+        }
+        if (s_log_count + (size_t)len > LOG_RINGBUF_SIZE) {
+            s_log_count = LOG_RINGBUF_SIZE;
+        } else {
+            s_log_count += (size_t)len;
+        }
+        xSemaphoreGive(s_log_mutex);
+    }
+
+    // Forward to original UART output
+    if (s_orig_vprintf != NULL) {
+        // Re-print the already-formatted string to UART.
+        // Use fputs since we already formatted.
+        fwrite(buf, 1, (size_t)len, stdout);
+        return len;
+    }
+    return len;
+}
+
+// Read current ring buffer contents into dst. Returns bytes written.
+// read_pos tracks where this reader left off (set to s_head on first call).
+static size_t log_ringbuf_read(char *dst, size_t dst_size, size_t *read_pos, bool *first_call) {
+    if (s_log_mutex == NULL) return 0;
+    if (xSemaphoreTake(s_log_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return 0;
+
+    size_t head = s_log_head;
+    size_t count = s_log_count;
+    size_t written = 0;
+
+    if (*first_call) {
+        // On first call, dump entire buffer contents
+        *first_call = false;
+        if (count > 0) {
+            size_t start = (head + LOG_RINGBUF_SIZE - count) % LOG_RINGBUF_SIZE;
+            size_t to_read = count < dst_size ? count : dst_size;
+            for (size_t i = 0; i < to_read; i++) {
+                dst[written++] = s_log_ringbuf[(start + i) % LOG_RINGBUF_SIZE];
+            }
+        }
+        *read_pos = head;
+    } else {
+        // Subsequent calls: read from read_pos to head
+        size_t rp = *read_pos;
+        size_t avail = (head + LOG_RINGBUF_SIZE - rp) % LOG_RINGBUF_SIZE;
+        if (head == rp) avail = 0; // nothing new
+        size_t to_read = avail < dst_size ? avail : dst_size;
+        for (size_t i = 0; i < to_read; i++) {
+            dst[written++] = s_log_ringbuf[(rp + i) % LOG_RINGBUF_SIZE];
+        }
+        *read_pos = (rp + to_read) % LOG_RINGBUF_SIZE;
+    }
+
+    xSemaphoreGive(s_log_mutex);
+    return written;
+}
+
+static void log_ringbuf_init(void) {
+    if (s_log_mutex != NULL) return; // already initialized
+    s_log_mutex = xSemaphoreCreateMutex();
+    s_orig_vprintf = esp_log_set_vprintf(log_ringbuf_vprintf);
+}
+
+void fw_telnet_log_init(void) {
+    log_ringbuf_init();
+}
+
 /* --- Telnet negotiation sequences ---------------------------------------- */
 
 // IAC WILL ECHO
@@ -323,7 +414,7 @@ static void tab_print_matches(int sock, const char *cwd, const char *prefix, boo
     }
 }
 
-static const char *cmd_names[] = { "ls", "cd", "pwd", "run", "stop", "top", "help", "exit", NULL };
+static const char *cmd_names[] = { "ls", "cd", "pwd", "run", "stop", "top", "log", "help", "exit", NULL };
 
 static void handle_tab(int sock, char *line, size_t *line_len, const char *cwd) {
     // Determine what we're completing
@@ -451,6 +542,7 @@ static void cmd_help(int sock) {
         "  run <name>      Run a shader by name\r\n"
         "  stop            Stop the running shader\r\n"
         "  top             Show shader status (live, any key exits)\r\n"
+        "  log             Tail ESP32 log output (any key exits)\r\n"
         "  help            Show this help\r\n"
         "  exit            Disconnect (or Ctrl+D)\r\n");
 }
@@ -689,7 +781,53 @@ done:
     telnet_send_str(sock, "\r\n");
 }
 
-/* --- Command dispatch ---------------------------------------------------- */
+static void cmd_log(int sock) {
+    char buf[512];
+    size_t read_pos = 0;
+    bool first_call = true;
+
+    telnet_send_str(sock, "--- Log output (press any key to stop) ---\r\n");
+
+    while (true) {
+        // Read available log data
+        size_t n = log_ringbuf_read(buf, sizeof(buf), &read_pos, &first_call);
+        if (n > 0) {
+            // Convert bare LF to CR+LF for telnet
+            for (size_t i = 0; i < n; i++) {
+                if (buf[i] == '\n' && (i == 0 || buf[i - 1] != '\r')) {
+                    telnet_send_str(sock, "\r\n");
+                } else if (buf[i] != '\r') {
+                    if (!telnet_send(sock, &buf[i], 1)) return;
+                }
+            }
+        }
+
+        // Check for keypress to exit (poll 5 times per second)
+        for (int i = 0; i < 5; i++) {
+            if (telnet_key_available(sock)) goto done;
+            vTaskDelay(pdMS_TO_TICKS(200));
+            // Check for new data between polls
+            size_t n2 = log_ringbuf_read(buf, sizeof(buf), &read_pos, &first_call);
+            if (n2 > 0) {
+                for (size_t j = 0; j < n2; j++) {
+                    if (buf[j] == '\n' && (j == 0 || buf[j - 1] != '\r')) {
+                        telnet_send_str(sock, "\r\n");
+                    } else if (buf[j] != '\r') {
+                        if (!telnet_send(sock, &buf[j], 1)) return;
+                    }
+                }
+            }
+        }
+    }
+
+done:
+    /* Drain any pending input bytes */
+    if (telnet_key_available(sock)) {
+        uint8_t drain[16];
+        recv(sock, drain, sizeof(drain), MSG_DONTWAIT);
+    }
+    telnet_send_str(sock, "\r\n--- Log stopped ---\r\n");
+}
 
 // Returns true if the client should be disconnected.
 static bool dispatch_command(int sock, fw_tcp_server_state_t *state,
@@ -728,6 +866,8 @@ static bool dispatch_command(int sock, fw_tcp_server_state_t *state,
         cmd_stop(sock, state);
     } else if (strcmp(cmd, "top") == 0) {
         cmd_top(sock, state);
+    } else if (strcmp(cmd, "log") == 0) {
+        cmd_log(sock);
     } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
         telnet_send_str(sock, "Bye.\r\n");
         return true;
@@ -904,6 +1044,8 @@ static void telnet_task(void *arg) {
 
 esp_err_t fw_telnet_server_start(uint16_t port, fw_tcp_server_state_t *state) {
     if (state == NULL) return ESP_ERR_INVALID_ARG;
+
+    log_ringbuf_init();
 
     s_ctx.port = port;
     s_ctx.state = state;

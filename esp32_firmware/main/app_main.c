@@ -148,6 +148,7 @@ static void fw_init_led_layout(void) {
 }
 
 void app_main(void) {
+    fw_telnet_log_init(); // Start capturing logs as early as possible
     ESP_LOGI(TAG, "Bootstrapping firmware scaffold");
     fw_init_nvs();
     fw_init_led_layout();
