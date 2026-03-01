@@ -1,6 +1,14 @@
 #include <math.h>
 #include <stdint.h>
 
+/* DSL_NOINLINE: defined by the ESP32 build to prevent GCC from inlining
+ * large helper functions (noise2, noise3, blend_over) into every shader.
+ * On ESP32 the 50+ KB of inlined code exceeds the 32 KB I-cache, causing
+ * severe cache thrash.  On desktop/simulator builds this is empty. */
+#ifndef DSL_NOINLINE
+#define DSL_NOINLINE
+#endif
+
 typedef struct {
     float x;
     float y;
@@ -76,7 +84,7 @@ static inline float dsl_box(dsl_vec2_t p, dsl_vec2_t b) {
     return sqrtf((outside.x * outside.x) + (outside.y * outside.y)) + inside;
 }
 
-static inline dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {
+static DSL_NOINLINE dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {
     const float src_a = dsl_clamp(src.a, 0.0f, 1.0f);
     const float dst_a = dsl_clamp(dst.a, 0.0f, 1.0f);
     const float out_a = src_a + (dst_a * (1.0f - src_a));
@@ -134,7 +142,7 @@ static inline float dsl_grad2(int hash, float x, float y) {
     return ((h & 1) ? -u : u) + ((h & 2) ? -2.0f * v : 2.0f * v);
 }
 
-static inline float dsl_noise2(float x, float y) {
+static DSL_NOINLINE float dsl_noise2(float x, float y) {
     const float F2 = 0.3660254037844386f;
     const float G2 = 0.21132486540518713f;
     const float s = (x + y) * F2;
@@ -168,7 +176,7 @@ static inline float dsl_grad3(int hash, float x, float y, float z) {
     return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
 }
 
-static inline float dsl_noise3(float x, float y, float z) {
+static DSL_NOINLINE float dsl_noise3(float x, float y, float z) {
     const float F3 = 1.0f / 3.0f;
     const float G3 = 1.0f / 6.0f;
     const float s = (x + y + z) * F3;

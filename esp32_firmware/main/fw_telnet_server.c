@@ -1131,13 +1131,14 @@ esp_err_t fw_telnet_server_start(uint16_t port, fw_tcp_server_state_t *state) {
     s_ctx.port = port;
     s_ctx.state = state;
 
-    BaseType_t ret = xTaskCreate(
+    BaseType_t ret = xTaskCreatePinnedToCore(
         telnet_task,
         "telnet_srv",
         TELNET_TASK_STACK,
         &s_ctx,
         TELNET_TASK_PRIO,
-        NULL
+        NULL,
+        0  /* Pin to core 0 — shader runs on core 1, so telnet is never starved */
     );
 
     if (ret != pdPASS) {

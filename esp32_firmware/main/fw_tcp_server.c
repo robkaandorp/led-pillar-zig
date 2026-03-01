@@ -498,9 +498,11 @@ static void fw_tcp_shader_task(void *arg) {
                 }
                 last_frame_us = now_us;
                 const float time_seconds = (float)(now_us - shader_time_start_us) / 1000000.0f;
-                const int64_t render_start_us = now_us;
+
+                const int64_t render_start_us = esp_timer_get_time();
                 esp_err_t render_err = fw_tcp_render_shader_frame_locked(state, time_seconds, frame_counter);
                 const int64_t frame_elapsed_us = esp_timer_get_time() - render_start_us;
+
                 if (render_err != ESP_OK) {
                     state->shader_active = false;
                     state->uniform_last_color_valid = false;
