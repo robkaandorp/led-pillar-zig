@@ -366,11 +366,40 @@ static void handle_tab(int sock, char *line, size_t *line_len, const char *cwd) 
         // Only complete for run and cd
         if (strcmp(cmd, "run") != 0 && strcmp(cmd, "cd") != 0) return;
 
+        // Split arg into dir_prefix and name_prefix at last '/'
+        // e.g. "../en" -> dir_prefix="../", name_prefix="en"
+        //      "foo"   -> dir_prefix="",    name_prefix="foo"
+        const char *last_slash = strrchr(arg, '/');
+        char resolve_dir[TELNET_CWD_MAX];
+        const char *name_prefix;
+        const char *arg_dir_prefix = ""; // literal text before name_prefix in arg
+        size_t arg_dir_len = 0;
+
+        if (last_slash != NULL) {
+            // Has path component — resolve directory part relative to cwd
+            char dir_part[TELNET_CWD_MAX];
+            size_t dp_len = (size_t)(last_slash - arg);
+            if (dp_len >= sizeof(dir_part)) dp_len = sizeof(dir_part) - 1;
+            memcpy(dir_part, arg, dp_len);
+            dir_part[dp_len] = '\0';
+
+            if (!vfs_resolve(cwd, dir_part, resolve_dir, sizeof(resolve_dir))) {
+                return; // Invalid directory path, no completions
+            }
+            name_prefix = last_slash + 1;
+            arg_dir_prefix = arg;
+            arg_dir_len = (size_t)(last_slash - arg) + 1; // includes trailing '/'
+        } else {
+            strlcpy(resolve_dir, cwd, sizeof(resolve_dir));
+            name_prefix = arg;
+        }
+
         char match_buf[TELNET_CWD_MAX];
-        int count = tab_complete_entries(cwd, arg, dirs_only, match_buf, sizeof(match_buf));
+        int count = tab_complete_entries(resolve_dir, name_prefix, dirs_only, match_buf, sizeof(match_buf));
 
         if (count == 1) {
-            const char *suffix = match_buf + strlen(arg);
+            // Build full completion: dir_prefix + match (only append the suffix the user hasn't typed)
+            const char *suffix = match_buf + strlen(name_prefix);
             size_t suffix_len = strlen(suffix);
             if (*line_len + suffix_len + 1 < TELNET_LINE_MAX) {
                 memcpy(line + *line_len, suffix, suffix_len);
@@ -379,7 +408,7 @@ static void handle_tab(int sock, char *line, size_t *line_len, const char *cwd) 
                 telnet_send(sock, suffix, suffix_len);
             }
         } else if (count > 1) {
-            tab_print_matches(sock, cwd, arg, dirs_only);
+            tab_print_matches(sock, resolve_dir, name_prefix, dirs_only);
             telnet_send_prompt(sock, cwd);
             telnet_send(sock, line, *line_len);
         }
@@ -538,12 +567,43 @@ static void cmd_stop(int sock, fw_tcp_server_state_t *state) {
 }
 
 static bool telnet_key_available(int sock) {
-    struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(sock, &fds);
-    int ret = select(sock + 1, &fds, NULL, NULL, &tv);
-    return ret > 0;
+    while (true) {
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(sock, &fds);
+        int ret = select(sock + 1, &fds, NULL, NULL, &tv);
+        if (ret <= 0) return false;
+
+        // Peek at next byte — skip IAC negotiation sequences
+        uint8_t peek;
+        int n = recv(sock, &peek, 1, MSG_PEEK);
+        if (n <= 0) return false;
+
+        if (peek == 255) {
+            // Consume IAC sequence so it doesn't trigger false keypress
+            recv(sock, &peek, 1, 0);
+            uint8_t cmd;
+            if (recv(sock, &cmd, 1, 0) <= 0) return false;
+            if (cmd >= 251 && cmd <= 254) {
+                uint8_t opt;
+                if (recv(sock, &opt, 1, 0) <= 0) return false;
+            }
+            if (cmd == 250) {
+                uint8_t sb;
+                while (recv(sock, &sb, 1, 0) > 0) {
+                    if (sb == 255) {
+                        uint8_t se;
+                        if (recv(sock, &se, 1, 0) <= 0) break;
+                        if (se == 240) break;
+                    }
+                }
+            }
+            continue; // Check again for real data
+        }
+
+        return true; // Non-IAC data available
+    }
 }
 
 static void cmd_top(int sock, fw_tcp_server_state_t *state) {
