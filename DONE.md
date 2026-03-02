@@ -55,6 +55,49 @@ Audio quality upgrade paths (external I2S DAC, Bluetooth A2DP) documented in [FU
 
 ---
 
+## ESP32 Shader Performance Optimization ✅
+
+### Problem
+
+The heaviest native shader (forest-wind) rendered at 55–67 ms per frame on ESP32, exceeding the 25 ms budget (40 FPS target) by 2.5×. The telnet console became unresponsive during heavy shaders because the shader task starved lower-priority tasks.
+
+### Root Causes
+
+1. **Flash bandwidth** — The ESP32 was running flash in DIO mode at 40 MHz (80 Mbit/s effective). Every instruction cache miss fetches from flash; heavy shaders that don't fit in the 32 KB I-cache spent most of their time waiting for flash.
+2. **I-cache thrashing (GCC 14 only)** — With 19 shaders compiled into a single translation unit, GCC 14's aggressive `-O3` inlining duplicated large helper functions (`noise2`, `noise3`, `blend_over`) at every call site, bloating `.text` to 50+ KB — far exceeding the 32 KB I-cache. Each cache miss evicted code that would be needed moments later.
+3. **Telnet starvation** — The shader task (core 1, priority 4) never yielded enough CPU for the telnet task (unpinned, priority 3). When telnet happened to be scheduled on core 1, it couldn't preempt the shader.
+
+### Fixes Applied
+
+| Fix | Effect | Files |
+|-----|--------|-------|
+| **QIO@80 MHz flash** | 4× flash bandwidth (320 Mbit/s vs 80 Mbit/s). Cache misses refill 4× faster. | `sdkconfig.defaults` |
+| **GCC-version-conditional DSL\_NOINLINE** | On GCC 14+: `__attribute__((noinline))` prevents duplicating heavy helpers across 19 call sites, keeping `.text` ≤ 32 KB. On GCC 13 and earlier: expands to `inline`, preserving the original `static inline` hint that GCC 13 needs for good interprocedural optimization. | `fw_native_shader.c`, `dsl_c_emitter.zig`, `dsl_shader_registry.c` |
+| **Telnet pinned to core 0** | Telnet always has a free core; shader runs undisturbed on core 1. | `fw_telnet_server.c` |
+| **Disable IDLE1 watchdog** | Shader monopolises core 1 by design; IDLE1 never runs. Disabling its watchdog check prevents spurious triggers on overbudget frames. | `sdkconfig.defaults` |
+
+### Performance Results
+
+| Shader | Before | After | Speedup |
+|--------|--------|-------|---------|
+| forest-wind | 55–67 ms | 20–24 ms | ~3× |
+| chaos-nebula | 125 ms | 9.5 ms | 13× |
+| gradient | 2.0 ms | 2.0 ms | (already fast) |
+
+17 of 19 shaders now run at 40 FPS. The two heaviest SDF shaders (soap-bubbles, void-tendrils) run at ~21 FPS due to inherent algorithmic complexity.
+
+### Key Insight
+
+GCC 13 and GCC 14 have opposite inlining behavior for `static inline` functions with `-O3`:
+- **GCC 14** aggressively inlines → code bloat → I-cache thrash → `noinline` fixes it
+- **GCC 13** does not aggressively inline → `noinline` (or removing `inline`) prevents beneficial interprocedural optimization → 2× regression
+
+The solution uses a preprocessor version check (`__GNUC__ >= 14`) so both compiler generations produce optimal code.
+
+**Commits**: `4a709b7`, `496e1de`, `86fefb3`, `cbfdcc9`
+
+---
+
 ## Design Decisions (for reference)
 
 | # | Question | Decision |
@@ -86,12 +129,12 @@ Audio quality upgrade paths (external I2S DAC, Bluetooth A2DP) documented in [FU
 | Resource | Value |
 |---|---|
 | ESP32 chip | ESP32 (dual-core Xtensa, 240 MHz, no PSRAM) |
-| Flash | 4 MB (DIO mode) |
+| Flash | 4 MB (QIO mode, 80 MHz) |
 | Firmware size | ~891 KB |
 | Free heap at boot | ~85 KB |
 | WiFi mode | APSTA (STA + AP simultaneous) |
-| FreeRTOS tasks | TCP server (core 0), shader renderer (core 1), telnet (unpinned) |
+| FreeRTOS tasks | TCP server (core 0), shader renderer (core 1), telnet (core 0) |
 | Shader target | 40 FPS, 30×40 pixels (1200 LEDs) |
-| Native shaders | 11 compiled from DSL into registry |
+| Native shaders | 19 compiled from DSL into registry |
 | Audio | 8-bit DAC on GPIO25, 22050 Hz mono |
 | Protocol | V1/V2 (raw frames), V3 (bytecode + native shader + OTA) |
