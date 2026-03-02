@@ -43,12 +43,11 @@ pub fn writePreambleC(writer: anytype) !void {
         \\#include <math.h>
         \\#include <stdint.h>
         \\
-        \\/* DSL_NOINLINE: defined by the ESP32 build to prevent GCC from inlining
-        \\ * large helper functions (noise2, noise3, blend_over) into every shader.
-        \\ * On ESP32 the 50+ KB of inlined code exceeds the 32 KB I-cache, causing
-        \\ * severe cache thrash.  On desktop/simulator builds this is empty. */
+        \\/* DSL_NOINLINE: defined by the ESP32 build to control inlining of
+        \\ * large helper functions (noise2, noise3, blend_over).
+        \\ * On desktop/simulator builds this defaults to `inline`. */
         \\#ifndef DSL_NOINLINE
-        \\#define DSL_NOINLINE
+        \\#define DSL_NOINLINE inline
         \\#endif
         \\
         \\typedef struct {{

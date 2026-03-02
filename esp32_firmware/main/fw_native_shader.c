@@ -21,12 +21,12 @@
 // Prevent GCC 14+ from inlining large helper functions (noise2, noise3,
 // blend_over) into every shader call site.  With 19 shaders the total
 // .text exceeds the ESP32 32KB I-cache, causing massive cache thrash.
-// GCC 13 and earlier do NOT aggressively inline these functions, so
-// forcing noinline on older compilers hurts performance (~2.5x slower).
+// GCC 13 and earlier do NOT aggressively inline these, so we restore
+// the original `static inline` hint by expanding DSL_NOINLINE to `inline`.
 #if defined(__GNUC__) && __GNUC__ >= 14
 #define DSL_NOINLINE __attribute__((noinline))
 #else
-#define DSL_NOINLINE
+#define DSL_NOINLINE inline
 #endif
 
 #include "generated/dsl_shader_registry.c"
