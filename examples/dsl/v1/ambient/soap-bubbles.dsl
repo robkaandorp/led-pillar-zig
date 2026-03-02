@@ -1,6 +1,7 @@
 // v1 DSL soap-bubbles using frame + for/if control flow.
 // This keeps bubbles moving upward with burst windows near the top.
 effect soap_bubbles_v1
+fps 20
 
 frame {
   let two_pi = PI * 2.0

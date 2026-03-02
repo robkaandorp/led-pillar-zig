@@ -18,6 +18,7 @@ A valid DSL program must include:
 3. One or more `layer` blocks
 4. One `emit` statement
 5. Zero or one `audio` block (optional; produces audio output)
+6. Zero or one `fps` declaration (optional; sets target frame rate, default 40)
 
 Top-level statement order is flexible, but all required parts must exist exactly once where required.
 
@@ -25,9 +26,10 @@ Top-level statement order is flexible, but all required parts must exist exactly
 
 ```ebnf
 program        = top_level* EOF ;
-top_level      = effect_decl | param_decl | frame_decl | layer_decl | audio_decl | emit_stmt ;
+top_level      = effect_decl | fps_decl | param_decl | frame_decl | layer_decl | audio_decl | emit_stmt ;
 
 effect_decl    = "effect" IDENT ;
+fps_decl       = "fps" INTEGER ;
 param_decl     = "param" IDENT "=" expr ;
 frame_decl     = "frame" "{" stmt* "}" ;
 layer_decl     = "layer" IDENT "{" layer_stmt* "}" ;
@@ -70,6 +72,19 @@ How params are used in v1:
 - Param expressions can use builtin functions, builtin constants, and input identifiers (`time`, `frame`, `width`, `height`, `seed`, and also `x`/`y`).
 - A param can reference earlier params, but not later params.
 - At runtime, params are evaluated before layer blending; params that depend on `x`/`y` are evaluated per pixel, others are evaluated once per frame.
+
+## FPS Hint
+
+`fps <integer>` sets the target frame rate for the shader (1–120). When omitted, the system default of 40 FPS is used.
+
+Heavy SDF shaders that cannot sustain 40 FPS should declare a lower target so the render loop uses a longer frame interval, avoiding stutter and reducing CPU waste on missed deadlines.
+
+```dsl
+effect heavy_sdf
+fps 20
+layer l { ... }
+emit
+```
 
 Example:
 

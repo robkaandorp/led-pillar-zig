@@ -112,6 +112,7 @@ pub const Program = struct {
     layers: []const Layer,
     audio_statements: []const Statement,
     has_emit: bool,
+    target_fps: ?u32 = null,
 };
 
 const BuiltinSpec = struct {
@@ -335,6 +336,7 @@ const Parser = struct {
         var layers = std.ArrayList(Layer).empty;
         var audio_statements: []const Statement = try self.allocator.alloc(Statement, 0);
         var has_audio_block = false;
+        var target_fps: ?u32 = null;
 
         while (self.current.tag != .eof) {
             if (self.current.tag != .identifier) return error.UnexpectedToken;
@@ -345,6 +347,17 @@ const Parser = struct {
                 const name = try self.expectIdentifier();
                 if (effect_name != null) return error.DuplicateEffect;
                 effect_name = name;
+                continue;
+            }
+
+            if (std.mem.eql(u8, keyword, "fps")) {
+                try self.advance();
+                if (target_fps != null) return error.DuplicateFps;
+                if (self.current.tag != .number) return error.ExpectedNumber;
+                const val = std.fmt.parseFloat(f64, self.current.lexeme) catch return error.InvalidNumber;
+                if (val < 1 or val > 120) return error.FpsOutOfRange;
+                target_fps = @intFromFloat(val);
+                try self.advance();
                 continue;
             }
 
@@ -408,6 +421,7 @@ const Parser = struct {
             .layers = try layers.toOwnedSlice(self.allocator),
             .audio_statements = audio_statements,
             .has_emit = has_emit,
+            .target_fps = target_fps,
         };
     }
 
@@ -1186,4 +1200,64 @@ test "parseAndValidate accepts phasor builtin in audio block" {
     try std.testing.expectEqualStrings("phase", let_stmt.name);
     try std.testing.expectEqual(Expr.call, std.meta.activeTag(let_stmt.value.*));
     try std.testing.expectEqual(BuiltinId.phasor, let_stmt.value.call.builtin);
+}
+
+test "parseAndValidate accepts fps hint" {
+    const source =
+        \\effect fps_test
+        \\fps 20
+        \\layer l {
+        \\  blend rgba(1.0, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const program = try parseAndValidate(arena.allocator(), source);
+    try std.testing.expectEqual(@as(?u32, 20), program.target_fps);
+}
+
+test "parseAndValidate defaults fps to null" {
+    const source =
+        \\effect no_fps
+        \\layer l {
+        \\  blend rgba(1.0, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const program = try parseAndValidate(arena.allocator(), source);
+    try std.testing.expectEqual(@as(?u32, null), program.target_fps);
+}
+
+test "parseAndValidate rejects duplicate fps" {
+    const source =
+        \\effect dup_fps
+        \\fps 20
+        \\fps 30
+        \\layer l {
+        \\  blend rgba(1.0, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = parseAndValidate(arena.allocator(), source);
+    try std.testing.expectError(error.DuplicateFps, result);
+}
+
+test "parseAndValidate rejects fps out of range" {
+    const source =
+        \\effect bad_fps
+        \\fps 200
+        \\layer l {
+        \\  blend rgba(1.0, 0.0, 0.0, 1.0)
+        \\}
+        \\emit
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = parseAndValidate(arena.allocator(), source);
+    try std.testing.expectError(error.FpsOutOfRange, result);
 }

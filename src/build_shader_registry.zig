@@ -16,6 +16,7 @@ const ShaderEntry = struct {
     has_frame: bool,
     has_audio: bool,
     phasor_count: usize,
+    target_fps: u32,
 };
 
 /// Derive a C-safe prefix from a DSL filename: "chaos-nebula.dsl" → "chaos_nebula"
@@ -102,6 +103,7 @@ pub fn generate(allocator: std.mem.Allocator, dsl_dir_path: []const u8, output_d
             \\    int has_audio_func;
             \\    float (*eval_audio)(float time, float seed, float sample_rate, float *phasor_state);
             \\    int phasor_count;
+            \\    int target_fps;
             \\} dsl_shader_entry_t;
             \\
             \\
@@ -121,6 +123,7 @@ pub fn generate(allocator: std.mem.Allocator, dsl_dir_path: []const u8, output_d
                 try w.writeAll(", .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0");
             }
             try w.print(", .phasor_count = {d}", .{entry.phasor_count});
+            try w.print(", .target_fps = {d}", .{entry.target_fps});
             try w.writeAll(" },\n");
         }
         try w.writeAll("};\n\n");
@@ -180,6 +183,7 @@ pub fn generate(allocator: std.mem.Allocator, dsl_dir_path: []const u8, output_d
             \\    int has_audio_func;
             \\    float (*eval_audio)(float time, float seed, float sample_rate, float *phasor_state);
             \\    int phasor_count;
+            \\    int target_fps;
             \\} dsl_shader_entry_t;
             \\
             \\extern const dsl_shader_entry_t dsl_shader_registry[];
@@ -255,6 +259,7 @@ fn collectDslFilesRecursive(
                 .has_frame = program.frame_statements.len > 0,
                 .has_audio = program.audio_statements.len > 0,
                 .phasor_count = dsl_c_emitter.countPhasorCalls(program.audio_statements),
+                .target_fps = program.target_fps orelse 0,
             });
         }
     }

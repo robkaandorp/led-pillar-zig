@@ -17,6 +17,7 @@ typedef struct {
     int has_audio_func;
     float (*eval_audio)(float time, float seed, float sample_rate, float *phasor_state);
     int phasor_count;
+    int target_fps;
 } dsl_shader_entry_t;
 
 extern const dsl_shader_entry_t dsl_shader_registry[];

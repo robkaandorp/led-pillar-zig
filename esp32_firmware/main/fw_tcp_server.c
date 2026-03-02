@@ -474,8 +474,9 @@ static void fw_tcp_shader_task(void *arg) {
     state->target_fps = 1000U / FW_SHADER_FRAME_INTERVAL_MS;
     const int64_t shader_time_start_us = esp_timer_get_time();
     uint32_t frame_counter = 0U;
-    const int64_t frame_interval_us = (int64_t)FW_SHADER_FRAME_INTERVAL_MS * 1000;
+    int64_t frame_interval_us = (int64_t)FW_SHADER_FRAME_INTERVAL_MS * 1000;
     int64_t last_frame_us = 0;
+    bool was_active = false;
 
     /* Subscribe to task watchdog so the IDLE task on this core is not
      * blamed for starvation while the shader loop runs continuously. */
@@ -485,6 +486,19 @@ static void fw_tcp_shader_task(void *arg) {
     while (true) {
         if (state->state_lock != NULL && xSemaphoreTake(state->state_lock, portMAX_DELAY) == pdTRUE) {
             if (state->shader_active) {
+                /* On shader activation, pick target FPS from registry. */
+                if (!was_active) {
+                    uint32_t fps = 1000U / FW_SHADER_FRAME_INTERVAL_MS;
+                    if (state->shader_source == FW_TCP_SHADER_SOURCE_NATIVE &&
+                        state->active_native_shader != NULL &&
+                        state->active_native_shader->target_fps > 0) {
+                        fps = (uint32_t)state->active_native_shader->target_fps;
+                    }
+                    state->target_fps = fps;
+                    frame_interval_us = (int64_t)(1000000 / fps);
+                    next_deadline_us = esp_timer_get_time() + frame_interval_us;
+                    was_active = true;
+                }
                 const int64_t now_us = esp_timer_get_time();
 
                 /* --- EMA FPS measurement --- */
@@ -527,6 +541,7 @@ static void fw_tcp_shader_task(void *arg) {
                 state->render_time_display_us = 0.0f;
                 state->render_time_audio_us = 0.0f;
                 last_frame_us = 0;
+                was_active = false;
             }
             xSemaphoreGive(state->state_lock);
         }

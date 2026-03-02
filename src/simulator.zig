@@ -33,6 +33,8 @@ const ShaderRegistryEntry = extern struct {
     eval_frame: ?ShaderEvalFrameFn,
     has_audio_func: c_int,
     eval_audio: ?ShaderEvalAudioFn,
+    phasor_count: c_int,
+    target_fps: c_int,
 };
 
 extern const dsl_shader_registry_count: c_int;
@@ -90,7 +92,7 @@ const v3_status_internal: u8 = 6;
 
 const v3_status_payload_len: usize = 20;
 const v3_max_bytecode_blob: usize = 64 * 1024;
-const shader_frame_interval_ns: u64 = 25 * std.time.ns_per_ms;
+const default_frame_interval_ns: u64 = 25 * std.time.ns_per_ms;
 
 const SimulatorStats = struct {
     timer: std.time.Timer,
@@ -385,7 +387,8 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
     var frame_counter: u32 = 0;
     var was_rendering = false;
     var clear_screen = true;
-    var next_deadline_ns: u64 = timer.read() + shader_frame_interval_ns;
+    var frame_interval_ns: u64 = default_frame_interval_ns;
+    var next_deadline_ns: u64 = timer.read() + frame_interval_ns;
 
     while (!context.stop_flag.load(.seq_cst)) {
         const frame_start_ns = timer.read();
@@ -409,6 +412,10 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
         if (should_render) {
             if (!was_rendering) {
                 clear_screen = true;
+                // Pick frame interval from shader's target_fps (0 = default 40 FPS).
+                const fps: u64 = if (current_shader) |s| (if (s.target_fps > 0) @intCast(s.target_fps) else 40) else 40;
+                frame_interval_ns = std.time.ns_per_s / fps;
+                next_deadline_ns = timer.read() + frame_interval_ns;
             }
             const eval_pixel: ?ShaderEvalPixelFn = if (current_shader) |s| s.eval_pixel else blk: {
                 if (dsl_shader_get(0)) |first| break :blk first.eval_pixel;
@@ -482,7 +489,7 @@ fn shaderRenderLoop(context: *ShaderRenderContext) void {
         } else {
             std.Thread.yield() catch {};
         }
-        next_deadline_ns += shader_frame_interval_ns;
+        next_deadline_ns += frame_interval_ns;
     }
 }
 
