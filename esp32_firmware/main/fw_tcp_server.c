@@ -477,6 +477,7 @@ static void fw_tcp_shader_task(void *arg) {
     int64_t frame_interval_us = (int64_t)FW_SHADER_FRAME_INTERVAL_MS * 1000;
     int64_t last_frame_us = 0;
     bool was_active = false;
+    const dsl_shader_entry_t *last_shader = NULL;
 
     /* Subscribe to task watchdog so the IDLE task on this core is not
      * blamed for starvation while the shader loop runs continuously. */
@@ -486,8 +487,8 @@ static void fw_tcp_shader_task(void *arg) {
     while (true) {
         if (state->state_lock != NULL && xSemaphoreTake(state->state_lock, portMAX_DELAY) == pdTRUE) {
             if (state->shader_active) {
-                /* On shader activation, pick target FPS from registry. */
-                if (!was_active) {
+                /* On shader activation or shader change, pick target FPS from registry. */
+                if (!was_active || state->active_native_shader != last_shader) {
                     uint32_t fps = 1000U / FW_SHADER_FRAME_INTERVAL_MS;
                     if (state->shader_source == FW_TCP_SHADER_SOURCE_NATIVE &&
                         state->active_native_shader != NULL &&
@@ -498,6 +499,7 @@ static void fw_tcp_shader_task(void *arg) {
                     frame_interval_us = (int64_t)(1000000 / fps);
                     next_deadline_us = esp_timer_get_time() + frame_interval_us;
                     was_active = true;
+                    last_shader = state->active_native_shader;
                 }
                 const int64_t now_us = esp_timer_get_time();
 
