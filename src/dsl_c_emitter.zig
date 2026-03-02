@@ -133,10 +133,11 @@ pub fn writePreambleC(writer: anytype) !void {
         \\        return (dsl_color_t){{ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 0.0f }};
         \\    }}
         \\    const float inv_out_a = 1.0f / out_a;
+        \\    const float one_minus_src_a = 1.0f - src_a;
         \\    return (dsl_color_t){{
-        \\        .r = ((src.r * src_a) + (dst.r * dst_a * (1.0f - src_a))) * inv_out_a,
-        \\        .g = ((src.g * src_a) + (dst.g * dst_a * (1.0f - src_a))) * inv_out_a,
-        \\        .b = ((src.b * src_a) + (dst.b * dst_a * (1.0f - src_a))) * inv_out_a,
+        \\        .r = dsl_clamp(((src.r * src_a) + (dst.r * dst_a * one_minus_src_a)) * inv_out_a, 0.0f, 1.0f),
+        \\        .g = dsl_clamp(((src.g * src_a) + (dst.g * dst_a * one_minus_src_a)) * inv_out_a, 0.0f, 1.0f),
+        \\        .b = dsl_clamp(((src.b * src_a) + (dst.b * dst_a * one_minus_src_a)) * inv_out_a, 0.0f, 1.0f),
         \\        .a = out_a,
         \\    }};
         \\}}

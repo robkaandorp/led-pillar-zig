@@ -96,10 +96,11 @@ pub const ColorRgba = struct {
 
         if (out_a <= 0.000001) return .{ .a = 0.0 };
 
+        const one_minus_sa = 1.0 - s.a;
         return .{
-            .r = ((s.r * s.a) + (d.r * d.a * (1.0 - s.a))) / out_a,
-            .g = ((s.g * s.a) + (d.g * d.a * (1.0 - s.a))) / out_a,
-            .b = ((s.b * s.a) + (d.b * d.a * (1.0 - s.a))) / out_a,
+            .r = clamp01(((s.r * s.a) + (d.r * d.a * one_minus_sa)) / out_a),
+            .g = clamp01(((s.g * s.a) + (d.g * d.a * one_minus_sa)) / out_a),
+            .b = clamp01(((s.b * s.a) + (d.b * d.a * one_minus_sa)) / out_a),
             .a = out_a,
         };
     }
