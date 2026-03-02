@@ -125,7 +125,7 @@ pub fn writePreambleC(writer: anytype) !void {
         \\    return sqrtf((outside.x * outside.x) + (outside.y * outside.y)) + inside;
         \\}}
         \\
-        \\static DSL_NOINLINE dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {{
+        \\static inline dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {{
         \\    const float src_a = dsl_clamp(src.a, 0.0f, 1.0f);
         \\    const float dst_a = dsl_clamp(dst.a, 0.0f, 1.0f);
         \\    const float out_a = src_a + (dst_a * (1.0f - src_a));
@@ -270,7 +270,7 @@ pub fn writePreambleC(writer: anytype) !void {
         \\}}
         \\
         \\
-        ,
+    ,
         .{},
     );
 }
@@ -668,7 +668,7 @@ fn emitCall3(
     a0: *dsl_parser.Expr,
     a1: *dsl_parser.Expr,
     a2: *dsl_parser.Expr,
- ) anyerror!void {
+) anyerror!void {
     try writer.print("{s}(", .{name});
     try emitExpr(writer, a0, scope);
     try writer.writeAll(", ");
