@@ -56,3 +56,10 @@
 - When adding public library functionality, expose it from `src/root.zig` so consumers importing `led_pillar_zig` can access it.
 - Keep tests colocated as Zig `test` blocks in the corresponding source files; this repository expects tests in both `root.zig` and `main.zig`.
 - Preserve module wiring names used in `build.zig` (`led_pillar_zig`) unless intentionally refactoring all import sites.
+
+## ESP32 firmware performance
+- After important ESP32 firmware changes (compiler flags, shader codegen, IDF upgrades, audio refactoring), re-run the shader benchmark: `python3 esp32_firmware/scripts/shader_benchmark.py` and compare results against the previous `esp32_firmware/SHADER_PERFORMANCE.md`.
+- The benchmark connects via telnet to the device, runs all native shaders, and writes a markdown report with build metadata and per-shader FPS, display/audio times, and budget percentages.
+- Key shaders to watch for regressions: `electric-arcs` (noise-heavy, I-cache sensitive), `forest-wind` (heaviest shader, close to budget), `tone-pulse` (audio dither path), `aurora-ribbons-classic` (high budget usage).
+- `esp32_firmware/main/CMakeLists.txt` applies per-file optimization: `fw_native_shader.c` and `fw_bytecode_vm.c` at `-O3 -ffast-math`, `fw_tcp_server.c` and `fw_audio_output.c` at `-O2 -ffast-math`. Global optimization is `-O2` via `CONFIG_COMPILER_OPTIMIZATION_PERF=y` in `sdkconfig.defaults`.
+- Firmware can be uploaded over TCP without USB: `zig build && ./zig-out/bin/led_pillar_zig <host> firmware-upload esp32_firmware/build/led_pillar_firmware.bin`
