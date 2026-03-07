@@ -24,7 +24,7 @@
 // GCC 13 and earlier do NOT aggressively inline these, so we restore
 // the original `static inline` hint by expanding DSL_NOINLINE to `inline`.
 #if defined(__GNUC__) && __GNUC__ >= 14
-#define DSL_NOINLINE __attribute__((noinline))
+#define DSL_NOINLINE __attribute__((noinline, noclone))
 #else
 #define DSL_NOINLINE inline
 #endif

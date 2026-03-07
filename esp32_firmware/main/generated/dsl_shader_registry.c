@@ -91,7 +91,7 @@ static inline float dsl_box(dsl_vec2_t p, dsl_vec2_t b) {
     return sqrtf((outside.x * outside.x) + (outside.y * outside.y)) + inside;
 }
 
-static inline dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {
+static DSL_NOINLINE dsl_color_t dsl_blend_over(dsl_color_t src, dsl_color_t dst) {
     const float src_a = dsl_clamp(src.a, 0.0f, 1.0f);
     const float dst_a = dsl_clamp(dst.a, 0.0f, 1.0f);
     const float out_a = src_a + (dst_a * (1.0f - src_a));
