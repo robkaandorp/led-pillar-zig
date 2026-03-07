@@ -29,9 +29,10 @@ typedef struct {
 }
 
 /**
- * Initialize the I2S peripheral in built-in DAC mode on GPIO25 (DAC channel 1)
- * and hold the DAC at silence (0x80) so shader activation does not have to
- * re-bias the line input.
+ * Initialize the DAC asynchronous DMA driver on GPIO25 (DAC channel 0).
+ * DMA runs continuously in a ring, outputting midscale silence (0x80) until
+ * audio samples are pushed.  A fill task on core 0 bridges between the
+ * render-loop push calls and the ISR-driven DMA buffer refill.
  */
 esp_err_t fw_audio_output_init(const fw_audio_config_t *config);
 
@@ -46,7 +47,7 @@ esp_err_t fw_audio_output_start(void);
 esp_err_t fw_audio_output_stop(void);
 
 /**
- * Push audio samples to the I2S DMA buffer.
+ * Push audio samples to the DAC DMA buffer.
  * @param samples  Array of unsigned 8-bit PCM samples [0..255], where 128 = silence
  * @param count    Number of samples
  * @param timeout_ms  Maximum time to wait if buffer is full
@@ -59,7 +60,7 @@ esp_err_t fw_audio_output_stop(void);
 esp_err_t fw_audio_output_push(const uint8_t *samples, size_t count, uint32_t timeout_ms);
 
 /**
- * Push midscale silence (0x80) into the I2S DMA buffer.
+ * Push midscale silence (0x80) into the DAC DMA buffer.
  */
 esp_err_t fw_audio_output_push_silence(size_t count, uint32_t timeout_ms);
 
