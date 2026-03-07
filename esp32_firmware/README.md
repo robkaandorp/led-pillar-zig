@@ -124,6 +124,7 @@ Native shader source wiring:
 - `fw_native_shader_render_frame()` runs the full pixel loop with serpentine mapping and is compiled with `__attribute__((flatten))` for maximum inlining.
 - Host DSL flows (`dsl-file` / DSL `bytecode-upload`) overwrite that generated file automatically.
 - After generating, a normal firmware build+flash is enough to run it via v3 command `0x07`.
+- DAC audio synthesis is currently implemented only for the native shader render path; uploaded bytecode shaders do not yet emit audio samples on the ESP32.
 
 For `0x06` push OTA, firmware must be built/flashed with an OTA partition table (`CONFIG_PARTITION_TABLE_TWO_OTA=y`).
 If the device was flashed earlier with single-app partitions, do one USB flash first so bootloader+partition table are updated.

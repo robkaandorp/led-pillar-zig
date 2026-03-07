@@ -16,17 +16,22 @@ typedef struct {
 } fw_audio_config_t;
 
 /**
- * Default audio configuration: 22050 Hz, 4 DMA buffers x 256 samples.
+ * Default audio configuration: 22050 Hz, 16 DMA buffers x 64 samples.
+ *
+ * Native shaders generate audio once per video frame (~40 Hz). Smaller DMA
+ * buffers reduce startup glitches because the producer doesn't have to land on
+ * large, partially filled descriptors before the queue settles.
  */
 #define FW_AUDIO_CONFIG_DEFAULT() { \
     .sample_rate = 22050, \
-    .dma_buf_count = 4, \
-    .dma_buf_len = 256, \
+    .dma_buf_count = 16, \
+    .dma_buf_len = 64, \
 }
 
 /**
- * Initialize the I2S peripheral in built-in DAC mode on GPIO25 (DAC channel 1).
- * Must be called before start/push.
+ * Initialize the I2S peripheral in built-in DAC mode on GPIO25 (DAC channel 1)
+ * and hold the DAC at silence (0x80) so shader activation does not have to
+ * re-bias the line input.
  */
 esp_err_t fw_audio_output_init(const fw_audio_config_t *config);
 
@@ -48,9 +53,15 @@ esp_err_t fw_audio_output_stop(void);
  * @return ESP_OK on success
  *
  * This function blocks until all samples are written or timeout expires.
- * Call this from the shader render task after each frame.
+ * Samples may be queued before start; starting playback begins consuming the
+ * already queued PCM stream immediately.
  */
 esp_err_t fw_audio_output_push(const uint8_t *samples, size_t count, uint32_t timeout_ms);
+
+/**
+ * Push midscale silence (0x80) into the I2S DMA buffer.
+ */
+esp_err_t fw_audio_output_push_silence(size_t count, uint32_t timeout_ms);
 
 /**
  * Check if audio output is currently active (started and not stopped).

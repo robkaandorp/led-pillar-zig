@@ -155,8 +155,6 @@ void app_main(void) {
     fw_init_network();
     fw_init_hostname_and_mdns();
     fw_init_wifi();
-    ESP_ERROR_CHECK(fw_tcp_server_start(&g_fw_layout, FW_TCP_DEFAULT_PORT));
-    ESP_ERROR_CHECK(fw_telnet_server_start(CONFIG_FW_TELNET_PORT, fw_tcp_server_get_state()));
 #if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
     {
         fw_audio_config_t audio_cfg = FW_AUDIO_CONFIG_DEFAULT();
@@ -165,6 +163,8 @@ void app_main(void) {
         ESP_LOGI(TAG, "Audio output initialized at %d Hz", CONFIG_FW_AUDIO_SAMPLE_RATE);
     }
 #endif
+    ESP_ERROR_CHECK(fw_tcp_server_start(&g_fw_layout, FW_TCP_DEFAULT_PORT));
+    ESP_ERROR_CHECK(fw_telnet_server_start(CONFIG_FW_TELNET_PORT, fw_tcp_server_get_state()));
     fw_ota_init();
     ESP_LOGI(TAG, "Scaffold initialization complete");
 }

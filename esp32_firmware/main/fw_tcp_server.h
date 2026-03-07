@@ -47,6 +47,7 @@ typedef struct fw_tcp_server_state {
     float render_time_display_us;
     float render_time_audio_us;
     uint32_t target_fps;
+    uint32_t audio_silence_frame_count;
     bool uniform_last_color_valid;
     uint8_t uniform_last_r;
     uint8_t uniform_last_g;

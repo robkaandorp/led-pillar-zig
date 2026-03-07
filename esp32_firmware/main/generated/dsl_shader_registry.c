@@ -228,6 +228,30 @@ static inline float dsl_phasor_advance(float *state, float freq, float sample_ra
 }
 
 
+/* Generated from effect: a440_test_tone */
+static void a440_test_tone_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer background */
+    const float dsl_let_pulse_0 = ((sinf(((time * 0.250000f) * 6.28318530717958647692f)) * 0.500000f) + 0.500000f);
+    const float dsl_let_intensity_1 = (0.180000f + (dsl_let_pulse_0 * 0.220000f));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_intensity_1, .g = (dsl_let_intensity_1 * 0.350000f), .b = (dsl_let_intensity_1 * 0.050000f), .a = 1.000000f }, __dsl_out);
+    /* layer status_glow */
+    const float dsl_let_cy_2 = (height * 0.500000f);
+    const float dsl_let_dist_3 = fabsf((y - dsl_let_cy_2));
+    const float dsl_let_band_4 = dsl_smoothstep(10.000000f, 0.000000f, dsl_let_dist_3);
+    const float dsl_let_intensity_5 = (dsl_let_band_4 * 0.850000f);
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_intensity_5, .g = (dsl_let_intensity_5 * 0.750000f), .b = (dsl_let_intensity_5 * 0.100000f), .a = dsl_let_intensity_5 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
+/* Audio: generated from effect: a440_test_tone */
+static float a440_test_tone_eval_audio(float time, float seed, float sample_rate, float *phasor_state) {
+    float __dsl_audio_out = 0.0f;
+    const float dsl_let_attack_0 = dsl_clamp((time / 0.200000f), 0.000000f, 1.000000f);
+    __dsl_audio_out = ((sinf(((time * 440.000000f) * 6.28318530717958647692f)) * 0.350000f) * dsl_let_attack_0);
+    return __dsl_audio_out;
+}
+
 /* Generated from effect: aurora_v1 */
 static void aurora_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
     const float dsl_param_speed_0 = 0.280000f;
@@ -1019,6 +1043,7 @@ typedef struct {
 } dsl_shader_entry_t;
 
 const dsl_shader_entry_t dsl_shader_registry[] = {
+    { .name = "a440-test-tone", .folder = "/native/audio", .eval_pixel = a440_test_tone_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 1, .eval_audio = a440_test_tone_eval_audio, .phasor_count = 0, .target_fps = 0 },
     { .name = "aurora", .folder = "/native/ambient", .eval_pixel = aurora_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
     { .name = "aurora-ribbons-classic", .folder = "/native/ambient", .eval_pixel = aurora_ribbons_classic_eval_pixel, .has_frame_func = 1, .eval_frame = aurora_ribbons_classic_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
     { .name = "campfire", .folder = "/native/nature", .eval_pixel = campfire_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
@@ -1040,7 +1065,7 @@ const dsl_shader_entry_t dsl_shader_registry[] = {
     { .name = "tone-pulse", .folder = "/native/audio", .eval_pixel = tone_pulse_eval_pixel, .has_frame_func = 1, .eval_frame = tone_pulse_eval_frame, .has_audio_func = 1, .eval_audio = tone_pulse_eval_audio, .phasor_count = 0, .target_fps = 0 },
 };
 
-const int dsl_shader_registry_count = 19;
+const int dsl_shader_registry_count = 20;
 
 #include <string.h>
 

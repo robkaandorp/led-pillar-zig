@@ -65,6 +65,7 @@ https://github.com/robkaandorp/tcp_led_stream
 - The simulator renders the matrix and prints live stats (FPS, bytes/s, total frames, total bytes) below it.
 - It now also handles v3 shader control commands (`bytecode-upload`, `native-shader-activate`, `stop`, `query`) and renders frames by executing the multi-shader registry from `esp32_firmware/main/generated/dsl_shader_registry.c`.
 - The simulator lists all available shaders at startup. Use `native-shader-activate <name>` to select one.
+- ESP32 DAC audio output currently runs only in the firmware's native shader path (`native-shader-activate`); the bytecode VM does not synthesize audio yet.
 - Run full tests: `zig build test`
 - Run tests in the library module: `zig build test-root`
 - Run tests in the executable module: `zig build test-main`

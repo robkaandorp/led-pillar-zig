@@ -78,6 +78,30 @@ static inline float fw_tcp_generate_seed(void) {
     return (float)(esp_random() >> 8) / 16777216.0f;
 }
 
+#if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
+static uint32_t fw_tcp_audio_samples_for_frame(const fw_tcp_server_state_t *state, uint32_t frame_counter) {
+    const uint32_t sample_rate = fw_audio_output_get_sample_rate();
+    const uint32_t audio_fps = state->target_fps > 0U ? state->target_fps : (1000U / FW_SHADER_FRAME_INTERVAL_MS);
+    if (audio_fps == 0U) {
+        return 0U;
+    }
+
+    const uint64_t start_sample_index = ((uint64_t)frame_counter * (uint64_t)sample_rate) / (uint64_t)audio_fps;
+    const uint64_t end_sample_index = (((uint64_t)frame_counter + 1U) * (uint64_t)sample_rate) / (uint64_t)audio_fps;
+    return (uint32_t)(end_sample_index - start_sample_index);
+}
+
+static esp_err_t fw_tcp_push_silence_frame(fw_tcp_server_state_t *state) {
+    if (state == NULL || !fw_audio_output_is_active()) {
+        return ESP_OK;
+    }
+
+    const uint32_t count = fw_tcp_audio_samples_for_frame(state, state->audio_silence_frame_count);
+    state->audio_silence_frame_count += 1U;
+    return fw_audio_output_push_silence(count, 100);
+}
+#endif
+
 static const char *TAG = "fw_tcp_srv";
 static fw_tcp_server_state_t g_fw_tcp_server = {0};
 
@@ -329,19 +353,18 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
 #if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
     if (state->active_native_shader != NULL && state->active_native_shader->has_audio_func &&
         state->active_native_shader->eval_audio != NULL) {
-        if (!fw_audio_output_is_active()) {
-            fw_audio_output_start();
-        }
         const int64_t audio_start_us = esp_timer_get_time();
         const uint32_t sample_rate = fw_audio_output_get_sample_rate();
-        const uint32_t samples_per_frame = sample_rate / 40U;
         uint8_t audio_buf[1024];
-        const uint32_t count = samples_per_frame < sizeof(audio_buf) ? samples_per_frame : (uint32_t)sizeof(audio_buf);
+        const uint32_t count_for_frame = fw_tcp_audio_samples_for_frame(state, frame_counter);
+        const uint32_t count = count_for_frame < sizeof(audio_buf) ? count_for_frame : (uint32_t)sizeof(audio_buf);
+        const uint64_t start_sample_index = ((uint64_t)frame_counter * (uint64_t)sample_rate) /
+                                            (uint64_t)(state->target_fps > 0U ? state->target_fps : (1000U / FW_SHADER_FRAME_INTERVAL_MS));
         const float inv_sr = 1.0f / (float)sample_rate;
         /* Simple LFSR-based triangular dither state. */
         static uint32_t dither_state = 0x12345678U;
         for (uint32_t i = 0; i < count; i++) {
-            float sample_time = time_seconds + (float)i * inv_sr;
+            float sample_time = (float)(start_sample_index + i) * inv_sr;
             float sample = state->active_native_shader->eval_audio(sample_time, state->native_shader_seed, (float)sample_rate, state->phasor_state);
             /* Clamp to [-1, 1] */
             if (sample > 1.0f) sample = 1.0f;
@@ -358,10 +381,27 @@ static esp_err_t fw_tcp_render_native_shader_frame_locked(fw_tcp_server_state_t 
             if (quantized > 255) quantized = 255;
             audio_buf[i] = (uint8_t)quantized;
         }
-        fw_audio_output_push(audio_buf, count, 25);
+        esp_err_t audio_err = fw_audio_output_push(audio_buf, count, 100);
+        if (audio_err != ESP_OK) {
+            ESP_LOGE(TAG, "audio push failed: %s", esp_err_to_name(audio_err));
+            return audio_err;
+        }
+        if (!fw_audio_output_is_active()) {
+            audio_err = fw_audio_output_start();
+            if (audio_err != ESP_OK) {
+                ESP_LOGE(TAG, "audio start failed: %s", esp_err_to_name(audio_err));
+                return audio_err;
+            }
+        }
         audio_us = (float)(esp_timer_get_time() - audio_start_us);
     } else if (fw_audio_output_is_active()) {
-        fw_audio_output_stop();
+        const int64_t audio_start_us = esp_timer_get_time();
+        esp_err_t audio_err = fw_tcp_push_silence_frame(state);
+        if (audio_err != ESP_OK) {
+            ESP_LOGE(TAG, "audio silence push failed: %s", esp_err_to_name(audio_err));
+            return audio_err;
+        }
+        audio_us = (float)(esp_timer_get_time() - audio_start_us);
     }
 #endif
     state->render_time_audio_us = state->render_time_audio_us * 0.9f + audio_us * 0.1f;
@@ -413,7 +453,14 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
         }
         const float bc_display_us = (float)(esp_timer_get_time() - bc_render_start);
         state->render_time_display_us = state->render_time_display_us * 0.9f + bc_display_us * 0.1f;
-        state->render_time_audio_us = state->render_time_audio_us * 0.9f;
+        const int64_t audio_start_us = esp_timer_get_time();
+        esp_err_t audio_err = fw_tcp_push_silence_frame(state);
+        if (audio_err != ESP_OK) {
+            ESP_LOGE(TAG, "audio silence push failed: %s", esp_err_to_name(audio_err));
+            return audio_err;
+        }
+        state->render_time_audio_us = state->render_time_audio_us * 0.9f +
+                                      (float)(esp_timer_get_time() - audio_start_us) * 0.1f;
         return push_err;
     }
     state->uniform_last_color_valid = false;
@@ -465,7 +512,14 @@ static esp_err_t fw_tcp_render_shader_frame_locked(fw_tcp_server_state_t *state,
     esp_err_t push_err = fw_led_output_push_frame(&state->led_output, state->frame_buffer, required_len, 0U, (uint8_t)bytes_per_pixel);
     const float bc_total_us = (float)(esp_timer_get_time() - bc_render_start);
     state->render_time_display_us = state->render_time_display_us * 0.9f + bc_total_us * 0.1f;
-    state->render_time_audio_us = state->render_time_audio_us * 0.9f;
+    const int64_t audio_start_us = esp_timer_get_time();
+    esp_err_t audio_err = fw_tcp_push_silence_frame(state);
+    if (audio_err != ESP_OK) {
+        ESP_LOGE(TAG, "audio silence push failed: %s", esp_err_to_name(audio_err));
+        return audio_err;
+    }
+    state->render_time_audio_us = state->render_time_audio_us * 0.9f +
+                                  (float)(esp_timer_get_time() - audio_start_us) * 0.1f;
     return push_err;
 }
 
@@ -541,7 +595,18 @@ static void fw_tcp_shader_task(void *arg) {
                 state->shader_frame_count = 0U;
                 state->measured_fps = 0.0f;
                 state->render_time_display_us = 0.0f;
-                state->render_time_audio_us = 0.0f;
+                if (fw_audio_output_is_active()) {
+                    const int64_t audio_start_us = esp_timer_get_time();
+                    esp_err_t audio_err = fw_tcp_push_silence_frame(state);
+                    if (audio_err != ESP_OK) {
+                        ESP_LOGW(TAG, "idle audio silence push failed: %s", esp_err_to_name(audio_err));
+                    } else {
+                        state->render_time_audio_us = state->render_time_audio_us * 0.9f +
+                                                      (float)(esp_timer_get_time() - audio_start_us) * 0.1f;
+                    }
+                } else {
+                    state->render_time_audio_us = 0.0f;
+                }
                 last_frame_us = 0;
                 was_active = false;
             }
@@ -853,9 +918,7 @@ static uint8_t fw_tcp_handle_v3_stop_shader(fw_tcp_server_state_t *state) {
         state->phasor_state_count = 0;
     }
 #if defined(CONFIG_FW_AUDIO_ENABLED) && CONFIG_FW_AUDIO_ENABLED
-    if (fw_audio_output_is_active()) {
-        fw_audio_output_stop();
-    }
+    (void)fw_tcp_push_silence_frame(state);
 #endif
     esp_err_t clear_err = fw_led_output_push_uniform_rgb(&state->led_output, 0U, 0U, 0U);
     xSemaphoreGive(state->state_lock);
