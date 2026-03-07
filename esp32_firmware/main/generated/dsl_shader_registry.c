@@ -326,6 +326,18 @@ static void aurora_ribbons_classic_eval_pixel(float time, float frame, float x, 
     *out_color = __dsl_out;
 }
 
+/* Generated from effect: blink */
+static void blink_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
+    dsl_color_t __dsl_out = (dsl_color_t){ .r = 0.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f };
+    /* layer l */
+    const float dsl_let_r_0 DSL_MAYBE_UNUSED = ((sinf((((time * 11.000000f) + (-(x))) + (y / 2.000000f))) + 1.000000f) / 2.000000f);
+    const float dsl_let_g_1 DSL_MAYBE_UNUSED = ((sinf((((time * 13.000000f) + (-(x))) + (y / 2.200000f))) + 1.000000f) / 2.000000f);
+    const float dsl_let_b_2 DSL_MAYBE_UNUSED = ((sinf((((time * 17.000000f) + x) + (y / 2.400000f))) + 1.000000f) / 2.000000f);
+    const float dsl_let_a_3 DSL_MAYBE_UNUSED = sqrtf(((sinf(((((-(time)) * 2.000000f) + (x / 5.000000f)) + (y / 2.000000f))) + 1.000000f) / 2.000000f));
+    __dsl_out = dsl_blend_over((dsl_color_t){ .r = dsl_let_r_0, .g = dsl_let_g_1, .b = dsl_let_b_2, .a = dsl_let_a_3 }, __dsl_out);
+    *out_color = __dsl_out;
+}
+
 /* Generated from effect: campfire_v1 */
 static void campfire_eval_pixel(float time, float frame, float x, float y, float width, float height, float seed, dsl_color_t *out_color) {
     const float dsl_param_pulse_0 DSL_MAYBE_UNUSED = 0.900000f;
@@ -1054,6 +1066,7 @@ const dsl_shader_entry_t dsl_shader_registry[] = {
     { .name = "a440-test-tone", .folder = "/native/audio", .eval_pixel = a440_test_tone_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 1, .eval_audio = a440_test_tone_eval_audio, .phasor_count = 0, .target_fps = 0 },
     { .name = "aurora", .folder = "/native/ambient", .eval_pixel = aurora_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
     { .name = "aurora-ribbons-classic", .folder = "/native/ambient", .eval_pixel = aurora_ribbons_classic_eval_pixel, .has_frame_func = 1, .eval_frame = aurora_ribbons_classic_eval_frame, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
+    { .name = "blink", .folder = "/native/geometric", .eval_pixel = blink_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
     { .name = "campfire", .folder = "/native/nature", .eval_pixel = campfire_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
     { .name = "chaos-nebula", .folder = "/native/energetic", .eval_pixel = chaos_nebula_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
     { .name = "dream-weaver", .folder = "/native/ambient", .eval_pixel = dream_weaver_eval_pixel, .has_frame_func = 0, .eval_frame = (void(*)(float,float))0, .has_audio_func = 0, .eval_audio = (float(*)(float,float,float,float*))0, .phasor_count = 0, .target_fps = 0 },
@@ -1073,7 +1086,7 @@ const dsl_shader_entry_t dsl_shader_registry[] = {
     { .name = "tone-pulse", .folder = "/native/audio", .eval_pixel = tone_pulse_eval_pixel, .has_frame_func = 1, .eval_frame = tone_pulse_eval_frame, .has_audio_func = 1, .eval_audio = tone_pulse_eval_audio, .phasor_count = 0, .target_fps = 0 },
 };
 
-const int dsl_shader_registry_count = 20;
+const int dsl_shader_registry_count = 21;
 
 #include <string.h>
 

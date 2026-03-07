@@ -5,7 +5,6 @@ const dsl_c_emitter = @import("dsl_c_emitter.zig");
 const excluded_files = [_][]const u8{
     "math-benchmark.dsl",
     "blank.dsl",
-    "blink.dsl",
 };
 
 const ShaderEntry = struct {
@@ -294,7 +293,7 @@ test "deriveFolder returns /native/subdir for subfolder files" {
 
 test "isExcluded filters utility shaders" {
     try std.testing.expect(isExcluded("blank.dsl"));
-    try std.testing.expect(isExcluded("blink.dsl"));
     try std.testing.expect(isExcluded("math-benchmark.dsl"));
+    try std.testing.expect(!isExcluded("blink.dsl"));
     try std.testing.expect(!isExcluded("aurora.dsl"));
 }

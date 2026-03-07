@@ -131,6 +131,10 @@ pub fn build(b: *std.Build) void {
     // Simulator compilation depends on the generated C file
     simulator_exe.step.dependOn(&gen_registry_cmd.step);
 
+    // Standalone step to regenerate the shader registry without building the simulator
+    const gen_shaders_step = b.step("gen-shaders", "Regenerate shader registry C files from DSL sources");
+    gen_shaders_step.dependOn(&gen_registry_cmd.step);
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.
