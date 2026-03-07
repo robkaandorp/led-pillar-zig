@@ -50,6 +50,14 @@ pub fn writePreambleC(writer: anytype) !void {
         \\#define DSL_NOINLINE inline
         \\#endif
         \\
+        \\#ifndef DSL_MAYBE_UNUSED
+        \\#if defined(__GNUC__)
+        \\#define DSL_MAYBE_UNUSED __attribute__((unused))
+        \\#else
+        \\#define DSL_MAYBE_UNUSED
+        \\#endif
+        \\#endif
+        \\
         \\typedef struct {{
         \\    float x;
         \\    float y;
@@ -351,7 +359,7 @@ pub fn writeShaderFunctions(
             const param_type = try inferExprType(param.value, &frame_scope);
             const c_name = try makeName(temp_allocator, "dsl_param", param.name, &name_counter);
             try writeIndent(writer, 1);
-            try writer.print("const {s} {s} = ", .{ cTypeName(param_type), c_name });
+            try writer.print("const {s} {s} DSL_MAYBE_UNUSED = ", .{ cTypeName(param_type), c_name });
             try emitExpr(writer, param.value, &frame_scope);
             try writer.writeAll(";\n");
             try frame_scope.put(param.name, .{ .c_name = c_name, .value_type = param_type });
@@ -388,7 +396,7 @@ pub fn writeShaderFunctions(
         const param_type = try inferExprType(param.value, &root_scope);
         const c_name = try makeName(temp_allocator, "dsl_param", param.name, &name_counter);
         try writeIndent(writer, 1);
-        try writer.print("const {s} {s} = ", .{ cTypeName(param_type), c_name });
+        try writer.print("const {s} {s} DSL_MAYBE_UNUSED = ", .{ cTypeName(param_type), c_name });
         try emitExpr(writer, param.value, &root_scope);
         try writer.writeAll(";\n");
         try root_scope.put(param.name, .{ .c_name = c_name, .value_type = param_type });
@@ -435,7 +443,7 @@ pub fn writeShaderFunctions(
             const param_type = try inferExprType(param.value, &audio_scope);
             const c_name = try makeName(temp_allocator, "dsl_param", param.name, &audio_name_counter);
             try writeIndent(writer, 1);
-            try writer.print("const {s} {s} = ", .{ cTypeName(param_type), c_name });
+            try writer.print("const {s} {s} DSL_MAYBE_UNUSED = ", .{ cTypeName(param_type), c_name });
             try emitExpr(writer, param.value, &audio_scope);
             try writer.writeAll(";\n");
             try audio_scope.put(param.name, .{ .c_name = c_name, .value_type = param_type });
@@ -466,7 +474,7 @@ fn emitStatements(
                 const expr_type = try inferExprType(let_decl.value, scope);
                 const c_name = try makeName(allocator, "dsl_let", let_decl.name, name_counter);
                 try writeIndent(writer, indent);
-                try writer.print("const {s} {s} = ", .{ cTypeName(expr_type), c_name });
+                try writer.print("const {s} {s} DSL_MAYBE_UNUSED = ", .{ cTypeName(expr_type), c_name });
                 try emitExpr(writer, let_decl.value, scope);
                 try writer.writeAll(";\n");
                 try scope.put(let_decl.name, .{ .c_name = c_name, .value_type = expr_type });
@@ -529,7 +537,7 @@ fn emitStatements(
                 var loop_scope = Scope.init(allocator, scope);
                 defer loop_scope.deinit();
                 try writeIndent(writer, indent + 1);
-                try writer.print("const float {s} = (float){s};\n", .{ index_name, iter_name });
+                try writer.print("const float {s} DSL_MAYBE_UNUSED = (float){s};\n", .{ index_name, iter_name });
                 try loop_scope.put(for_stmt.index_name, .{ .c_name = index_name, .value_type = .scalar });
                 try emitStatements(
                     writer,

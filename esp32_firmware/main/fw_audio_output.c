@@ -62,8 +62,8 @@ esp_err_t fw_audio_output_init(const fw_audio_config_t *config) {
     i2s_config_t i2s_config = {
         .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_DAC_BUILT_IN,
         .sample_rate = config->sample_rate,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,  // Required for built-in DAC
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,   // DAC needs stereo format
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_MSB,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = (int)config->dma_buf_count,
@@ -78,7 +78,6 @@ esp_err_t fw_audio_output_init(const fw_audio_config_t *config) {
         return ret;
     }
 
-    /* Route I2S0 to the internal DAC pads. */
     ret = i2s_set_pin(I2S_NUM, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "i2s_set_pin failed: %s", esp_err_to_name(ret));
@@ -86,8 +85,7 @@ esp_err_t fw_audio_output_init(const fw_audio_config_t *config) {
         return ret;
     }
 
-    // Enable DAC output on channel 1 (GPIO25) only
-    ret = i2s_set_dac_mode(I2S_DAC_CHANNEL_RIGHT_EN);  // GPIO25 = right channel = DAC1
+    ret = i2s_set_dac_mode(I2S_DAC_CHANNEL_RIGHT_EN);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "i2s_set_dac_mode failed: %s", esp_err_to_name(ret));
         i2s_driver_uninstall(I2S_NUM);
@@ -101,9 +99,9 @@ esp_err_t fw_audio_output_init(const fw_audio_config_t *config) {
         return ret;
     }
 
-    ret = i2s_stop(I2S_NUM);
+    ret = i2s_start(I2S_NUM);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_stop failed during init: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "i2s_start failed during init: %s", esp_err_to_name(ret));
         i2s_driver_uninstall(I2S_NUM);
         return ret;
     }
@@ -111,13 +109,6 @@ esp_err_t fw_audio_output_init(const fw_audio_config_t *config) {
     ret = fw_audio_output_prime_silence(config->dma_buf_count * config->dma_buf_len, 100);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "prime silence failed during init: %s", esp_err_to_name(ret));
-        i2s_driver_uninstall(I2S_NUM);
-        return ret;
-    }
-
-    ret = i2s_start(I2S_NUM);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_start failed during init: %s", esp_err_to_name(ret));
         i2s_driver_uninstall(I2S_NUM);
         return ret;
     }
@@ -133,10 +124,10 @@ esp_err_t fw_audio_output_start(void) {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (s_active) return ESP_OK;
 
-    esp_err_t ret = fw_audio_output_prime_silence(256, 100);
+    esp_err_t ret = i2s_start(I2S_NUM);
     if (ret != ESP_OK) return ret;
 
-    ret = i2s_start(I2S_NUM);
+    ret = fw_audio_output_prime_silence(256, 100);
     if (ret != ESP_OK) return ret;
 
     s_active = true;
@@ -148,7 +139,6 @@ esp_err_t fw_audio_output_stop(void) {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (!s_active) return ESP_OK;
 
-    // Write a short silence buffer to flush
     uint8_t silence[64];
     memset(silence, 128, sizeof(silence));
     fw_audio_output_push(silence, sizeof(silence), 100);
