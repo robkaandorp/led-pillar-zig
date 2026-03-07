@@ -7,64 +7,41 @@ Re-run after important firmware changes to detect regressions.
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-03-07 19:46 UTC |
-| Git commit | `230fee4 (dirty)` |
+| Date | 2026-03-07 20:14 UTC |
+| Git commit | `916438f (dirty)` |
 | ESP-IDF version | ESP-IDF v5.5.3 |
 | GCC version | xtensa-esp-elf-gcc (crosstool-NG esp-14.2.0_20251107) 14.2.0 |
-| Shader compile flags | `fw_native_shader.c, fw_bytecode_vm.c: -O3 -ffast-math -fno-math-errno; fw_tcp_server.c, fw_audio_output.c: -O2 -ffast-math -fno-math-errno` |
+| Shader compile flags | `fw_bytecode_vm.c: -O3;-ffast-math;-fno-math-errno; fw_native_shader.c: -O3;-ffast-math;-fno-math-errno; fw_tcp_server.c: -O2;-ffast-math;-fno-math-errno; fw_audio_output.c: -O2;-ffast-math;-fno-math-errno` |
 | Global optimization | -O2 (performance) |
 
 ## Results
 
 | Shader | FPS | Display (ms) | Audio (ms) | Total (ms) | Budget % | Audio | Slow Frames | Heap |
 |--------|----:|-------------:|-----------:|-----------:|---------:|-------|------------:|-----:|
-| a440-test-tone | 40.0 | 3.2 | 0.5 | 3.7 | ✅ 14.9% | active | 0 | 46312 |
-| aurora | 40.0 | 2.5 | 0.0 | 2.6 | ✅ 10.2% | none | 0 | 46092 |
-| aurora-ribbons-classic | 40.4 | 21.6 | 0.0 | 21.7 | ✅ 86.6% | none | 0 | 46092 |
-| campfire | 40.0 | 3.9 | 0.0 | 3.9 | ✅ 15.6% | none | 0 | 46092 |
-| chaos-nebula | 40.0 | 10.1 | 0.0 | 10.1 | ✅ 40.5% | none | 0 | 46112 |
-| dream-weaver | 40.0 | 9.5 | 0.0 | 9.5 | ✅ 38.2% | none | 0 | 46112 |
-| electric-arcs | 40.3 | 19.6 | 0.0 | 19.6 | ✅ 78.5% | none | 0 | 46112 |
-| forest-wind | 38.3 | 24.6 | 1.4 | 26.1 | ⚠️ 104.4% | active | 0 | 46112 |
-| gradient | 40.0 | 2.3 | 0.0 | 2.3 | ✅ 9.2% | none | 0 | 46112 |
-| heartbeat-pulse | 40.0 | 3.8 | 0.7 | 4.4 | ✅ 17.8% | active | 0 | 46112 |
-| infinite-lines | 40.0 | 13.0 | 0.0 | 13.0 | ✅ 52.1% | none | 0 | 46112 |
-| lava-lamp | 40.0 | 11.6 | 0.0 | 11.7 | ✅ 46.6% | none | 0 | 46112 |
-| ocean-waves | 40.0 | 12.9 | 0.0 | 12.9 | ✅ 51.6% | none | 0 | 46112 |
-| primal-storm | 40.0 | 9.2 | 0.0 | 9.2 | ✅ 36.7% | none | 0 | 46112 |
-| rain-matrix | 40.0 | 13.3 | 0.0 | 13.3 | ✅ 53.1% | none | 0 | 46112 |
-| rain-ripple | 40.0 | 4.2 | 0.0 | 4.2 | ✅ 17.0% | none | 0 | 46112 |
-| soap-bubbles | 20.1 | 46.2 | 0.0 | 46.3 | ✅ 92.5% | none | 0 | 46112 |
-| spiral-galaxy | 40.0 | 8.1 | 0.0 | 8.1 | ✅ 32.3% | none | 0 | 46112 |
-| starfield | 40.0 | 6.9 | 0.0 | 6.9 | ✅ 27.7% | none | 0 | 46112 |
-| tone-pulse | 40.0 | 3.1 | 0.7 | 3.8 | ✅ 15.1% | active | 0 | 46112 |
+| a440-test-tone | 40.0 | 3.2 | 0.5 | 3.7 | ✅ 14.9% | active | 0 | 46084 |
+| aurora | 40.0 | 2.5 | 0.0 | 2.5 | ✅ 10.2% | none | 0 | 46096 |
+| aurora-ribbons-classic | 40.6 | 21.7 | 0.0 | 21.7 | ✅ 86.8% | none | 0 | 46116 |
+| campfire | 40.0 | 3.9 | 0.0 | 3.9 | ✅ 15.6% | none | 0 | 46116 |
+| chaos-nebula | 40.0 | 10.1 | 0.0 | 10.1 | ✅ 40.6% | none | 0 | 46116 |
+| dream-weaver | 40.0 | 9.5 | 0.0 | 9.5 | ✅ 38.2% | none | 0 | 46116 |
+| electric-arcs | 41.3 | 19.6 | 0.0 | 19.7 | ✅ 78.6% | none | 0 | 46116 |
+| forest-wind | 30.1 | 24.6 | 1.9 | 26.5 | ✅ 79.5% | active | 0 | 46116 |
+| gradient | 40.0 | 2.3 | 0.0 | 2.3 | ✅ 9.2% | none | 0 | 46116 |
+| heartbeat-pulse | 40.0 | 3.7 | 0.7 | 4.4 | ✅ 17.7% | active | 0 | 46116 |
+| infinite-lines | 40.0 | 13.0 | 0.0 | 13.0 | ✅ 52.0% | none | 0 | 46116 |
+| lava-lamp | 40.0 | 11.5 | 0.0 | 11.5 | ✅ 46.0% | none | 0 | 46116 |
+| ocean-waves | 40.0 | 13.0 | 0.0 | 13.0 | ✅ 52.0% | none | 0 | 46116 |
+| primal-storm | 40.0 | 9.2 | 0.0 | 9.3 | ✅ 37.1% | none | 0 | 46116 |
+| rain-matrix | 40.0 | 13.2 | 0.0 | 13.3 | ✅ 53.1% | none | 0 | 46116 |
+| rain-ripple | 40.0 | 4.2 | 0.0 | 4.3 | ✅ 17.0% | none | 0 | 46116 |
+| soap-bubbles | 20.0 | 47.0 | 0.0 | 47.0 | ✅ 94.0% | none | 0 | 46116 |
+| spiral-galaxy | 40.0 | 8.1 | 0.0 | 8.1 | ✅ 32.3% | none | 0 | 46116 |
+| starfield | 40.0 | 6.9 | 0.0 | 6.9 | ✅ 27.7% | none | 0 | 46116 |
+| tone-pulse | 40.0 | 3.1 | 0.7 | 3.8 | ✅ 15.0% | active | 0 | 46116 |
 
 ## Summary
 
 - **Total shaders tested**: 20
-- **At or under budget**: 19
-- **Over budget**: 1
-- **Over-budget shaders**: forest-wind
-
-## Comparison vs Pre-Optimization Baseline (global -Og)
-
-Baseline: commit `230fee4`, global `-Og`, only shader/VM files at `-O3`.
-Current:  commit `230fee4` + optimizations, global `-O2`, hot-path files at `-O2/-O3 -ffast-math`.
-
-| Shader | Before (ms) | After (ms) | Δ | Speedup | Notes |
-|--------|------------:|-----------:|--:|--------:|-------|
-| electric-arcs | 42.7 | 19.6 | -23.1 | **2.18×** | Now at 40 FPS ✅ |
-| forest-wind | 35.8 | 26.1 | -9.7 | **1.37×** | 27.9→38.3 FPS |
-| tone-pulse | 17.0 | 3.8 | -13.2 | **4.47×** | Audio dither loop optimized |
-| a440-test-tone | 4.2 | 3.7 | -0.5 | 1.14× | |
-| heartbeat-pulse | 4.9 | 4.4 | -0.5 | 1.11× | |
-| aurora-ribbons | 21.9 | 21.7 | -0.2 | 1.01× | |
-| soap-bubbles | 45.7 | 46.3 | +0.6 | 0.99× | Within noise |
-| ocean-waves | 11.3 | 12.9 | +1.6 | 0.88× | Slight regression |
-
-Key takeaways:
-- Global `-O2` reduced I-cache pressure from system code, benefiting heavy shaders dramatically.
-- Audio dither loop (`fw_tcp_server.c`) was the biggest winner: now at `-O2 -ffast-math` vs `-Og`.
-- `ocean-waves` shows a slight regression (~1.6ms), likely due to I-cache layout changes. Monitor in future runs.
-- `forest-wind` is very close to 40 FPS (24.6ms display, 1.4ms audio). Audio overhead is the bottleneck.
+- **At or under budget**: 20
+- **Over budget**: 0
 

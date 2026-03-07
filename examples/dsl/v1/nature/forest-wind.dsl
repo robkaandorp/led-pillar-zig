@@ -2,6 +2,7 @@
 // movement. Nature-inspired greens and browns with gentle audio
 // of filtered wind noise.
 effect forest_wind
+fps 30
 
 param sway_speed = 0.6
 param sway_amount = 0.12
